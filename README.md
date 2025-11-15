@@ -39,11 +39,12 @@ defmodule MyApp.PulsarPipeline do
       name: __MODULE__,
       producer: [
         module: {OffBroadway.Pulsar.Producer,
-          pulsar: [
-            host: "pulsar://localhost:6650"
-          ],
+          host: "pulsar://localhost:6650",
           topic: "persistent://public/default/my-topic",
-          subscription: "my-subscription"
+          subscription: "my-subscription",
+          consumer_opts: [
+            subscription_type: :Shared
+          ]
         },
         concurrency: 1
       ],
@@ -82,13 +83,63 @@ end
 
 ### Producer Options
 
-- `:pulsar` - Pulsar client configuration (required)
-  - `:host` - Pulsar broker URL (e.g., `"pulsar://localhost:6650"`)
-  - Other Pulsar client options
+- `:host` - Broker URL (e.g., `"pulsar://localhost:6650"`) (required)
 - `:topic` - Pulsar topic to consume from (required)
 - `:subscription` - Subscription name (required)
+- `:conn_opts` - Connection options (optional):
+  - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
+  - `:auth` - Authentication configuration:
+    - `:type` - Auth module (e.g., `Pulsar.Auth.OAuth2`)
+    - `:opts` - Auth-specific options
+  - `:conn_timeout` - Connection timeout in milliseconds
+  - `:startup_jitter_ms` - Random startup delay to avoid thundering herd
+  - `:start_delay_ms` - Startup delay in milliseconds
+- `:consumer_opts` - Consumer-specific options (optional):
+  - `:subscription_type` - Subscription type (`:Exclusive`, `:Shared`, `:Key_Shared`, default: `:Shared`)
+  - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
+  - `:durable` - Whether subscription is durable (default: `true`)
+  - `:force_create_topic` - Force topic creation (default: `true`)
+  - `:start_message_id` - Start from specific message ID
+  - `:start_timestamp` - Start from timestamp
+  - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
+  - `:dead_letter_policy` - Dead letter queue configuration:
+    - `:max_redelivery` - Maximum redeliveries before sending to DLQ
+    - `:topic` - Dead letter topic (optional, defaults to `<topic>-<subscription>-DLQ`)
+  - `:consumer_count` - Number of consumer processes (default: 1)
 
-The underlying Pulsar consumer can be configured through the `pulsar-elixir` library options:
+**Note:** Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported because Broadway controls message flow through its demand mechanism.
+
+### Example with Authentication
+
+```elixir
+producer: [
+  module: {OffBroadway.Pulsar.Producer,
+    host: "pulsar+ssl://my-cluster.example.com:6651",
+    topic: "persistent://my-tenant/my-namespace/my-topic",
+    subscription: "my-subscription",
+    conn_opts: [
+      socket_opts: [verify: :verify_none],
+      auth: [
+        type: Pulsar.Auth.OAuth2,
+        opts: [
+          client_id: "my-client-id",
+          client_secret: "my-client-secret",
+          site: "https://auth.example.com",
+          audience: "urn:pulsar:my-cluster"
+        ]
+      ]
+    ],
+    consumer_opts: [
+      subscription_type: :Shared,
+      initial_position: :earliest,
+      dead_letter_policy: [
+        max_redelivery: 3
+      ]
+    ]
+  },
+  concurrency: 1
+]
+```
 
 ## Documentation
 

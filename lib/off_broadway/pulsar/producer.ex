@@ -7,9 +7,60 @@ defmodule OffBroadway.Pulsar.Producer do
 
   require Logger
 
+  @supported_conn_opts [
+    :socket_opts,
+    :auth,
+    :conn_timeout,
+    :startup_jitter_ms,
+    :start_delay_ms
+  ]
+
+  @default_conn_opts []
+
+  @supported_consumer_opts [
+    :subscription_type,
+    :initial_position,
+    :durable,
+    :force_create_topic,
+    :start_message_id,
+    :start_timestamp,
+    :redelivery_interval,
+    :dead_letter_policy,
+    :consumer_count
+  ]
+
+  @default_consumer_opts [
+    subscription_type: :Shared
+  ]
+
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
+
+  ## Configuration
+
+  - `:host` - Broker URL (e.g., "pulsar://localhost:6650") (required)
+  - `:topic` - The Pulsar topic to consume from (required)
+  - `:subscription` - The subscription name (required)
+  - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional):
+    - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
+    - `:auth` - Authentication configuration
+    - `:conn_timeout` - Connection timeout in milliseconds
+    - `:startup_jitter_ms` - Random startup delay to avoid thundering herd
+    - `:start_delay_ms` - Startup delay in milliseconds
+  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.start_consumer/4` (optional):
+    - `:subscription_type` - Subscription type (`:Exclusive`, `:Shared`, `:Key_Shared`, default: `:Shared`)
+    - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
+    - `:durable` - Whether subscription is durable (default: `true`)
+    - `:force_create_topic` - Force topic creation (default: `true`)
+    - `:start_message_id` - Start from specific message ID
+    - `:start_timestamp` - Start from timestamp
+    - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
+    - `:dead_letter_policy` - Dead letter queue configuration
+    - `:consumer_count` - Number of consumer processes (default: 1)
+
+  Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported
+  in `:consumer_opts` because Broadway controls message flow.
   """
   def start_link(opts) do
     GenStage.start_link(__MODULE__, opts)
@@ -18,23 +69,37 @@ defmodule OffBroadway.Pulsar.Producer do
   @impl GenStage
   def init(opts) do
     # TO-DO: This could be started globally, outside of the producer.
-    pulsar_opts = Keyword.fetch!(opts, :pulsar)
-    {:ok, _pid} = Pulsar.start(pulsar_opts)
-
+    host = Keyword.fetch!(opts, :host)
     topic = Keyword.fetch!(opts, :topic)
     subscription = Keyword.fetch!(opts, :subscription)
+
+    conn_opts =
+      opts
+      |> Keyword.get(:conn_opts, @default_conn_opts)
+      |> Keyword.take(@supported_conn_opts)
+
+    pulsar_opts = Keyword.put(conn_opts, :host, host)
+
+    {:ok, _pid} = Pulsar.start(pulsar_opts)
+
+    consumer_opts =
+      opts
+      |> Keyword.get(:consumer_opts, @default_consumer_opts)
+      |> Keyword.take(@supported_consumer_opts)
+      |> Keyword.put(:init_args, [self()])
+      |> Keyword.put(:flow_initial, 0)
 
     {:ok, consumer_group} =
       Pulsar.start_consumer(
         topic,
         subscription,
         OffBroadway.Pulsar.Consumer,
-        subscription_type: :Shared,
-        init_args: [self()],
-        # Disable automatic flow - Broadway will control demand
-        flow_initial: 0
+        consumer_opts
       )
 
+    # TO-DO: move this logic to pulsar-elixir. Consumer Group should
+    # know how to route messages to the right consumer. Alternatively,
+    # use named consumers so that we can ACK/NACK messages by name.
     # Get the actual consumer process PID (not the supervisor)
     # Pulsar.start_consumer returns a ConsumerGroup supervisor PID
     # We need the actual Consumer process PID to call send_flow
