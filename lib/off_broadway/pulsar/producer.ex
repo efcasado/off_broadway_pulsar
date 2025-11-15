@@ -39,10 +39,13 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Configuration
 
-  - `:host` - Broker URL (e.g., "pulsar://localhost:6650") (required)
+  - `:host` - Broker URL (e.g., "pulsar://localhost:6650") (optional).
+    If provided, the producer will start its own Pulsar connection.
+    If not provided, the producer assumes Pulsar is already started globally
+    (e.g., in your application's supervision tree).
   - `:topic` - The Pulsar topic to consume from (required)
   - `:subscription` - The subscription name (required)
-  - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional):
+  - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
     - `:auth` - Authentication configuration
     - `:conn_timeout` - Connection timeout in milliseconds
@@ -61,6 +64,38 @@ defmodule OffBroadway.Pulsar.Producer do
 
   Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported
   in `:consumer_opts` because Broadway controls message flow.
+
+  ## Usage Patterns
+
+  ### Pattern 1: Producer-managed connection (host provided)
+  The producer starts its own Pulsar connection. Useful for simple setups or when
+  each producer needs different connection settings.
+
+      producer: [
+        module: {OffBroadway.Pulsar.Producer,
+          host: "pulsar://localhost:6650",
+          topic: "my-topic",
+          subscription: "my-subscription"
+        }
+      ]
+
+  ### Pattern 2: Application-managed connection (no host)
+  Pulsar is started globally in your supervision tree. Useful when multiple producers
+  share the same cluster or for better resource management.
+
+      # In your application.ex:
+      children = [
+        {Pulsar, host: "pulsar://localhost:6650"},
+        MyApp.PulsarPipeline
+      ]
+
+      # In your producer config:
+      producer: [
+        module: {OffBroadway.Pulsar.Producer,
+          topic: "my-topic",
+          subscription: "my-subscription"
+        }
+      ]
   """
   def start_link(opts) do
     GenStage.start_link(__MODULE__, opts)
@@ -68,19 +103,25 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def init(opts) do
-    # TO-DO: This could be started globally, outside of the producer.
-    host = Keyword.fetch!(opts, :host)
     topic = Keyword.fetch!(opts, :topic)
     subscription = Keyword.fetch!(opts, :subscription)
 
-    conn_opts =
-      opts
-      |> Keyword.get(:conn_opts, @default_conn_opts)
-      |> Keyword.take(@supported_conn_opts)
+    # Only start Pulsar if host is provided (producer-managed connection)
+    # Otherwise, assume Pulsar is already started globally (application-managed connection)
+    case Keyword.fetch(opts, :host) do
+      {:ok, host} ->
+        conn_opts =
+          opts
+          |> Keyword.get(:conn_opts, @default_conn_opts)
+          |> Keyword.take(@supported_conn_opts)
 
-    pulsar_opts = Keyword.put(conn_opts, :host, host)
+        pulsar_opts = Keyword.put(conn_opts, :host, host)
 
-    {:ok, _pid} = Pulsar.start(pulsar_opts)
+        {:ok, _pid} = Pulsar.start(pulsar_opts)
+
+      :error ->
+        :ok
+    end
 
     consumer_opts =
       opts

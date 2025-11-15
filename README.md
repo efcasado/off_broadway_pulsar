@@ -28,7 +28,11 @@ end
 
 ## Usage
 
-Define a Broadway pipeline using the Pulsar producer:
+There are two ways to use OffBroadway.Pulsar:
+
+### Pattern 1: Producer-Managed Connection
+
+The producer starts its own Pulsar connection. This is simpler for getting started or when each producer needs different connection settings.
 
 ```elixir
 defmodule MyApp.PulsarPipeline do
@@ -79,14 +83,70 @@ defmodule MyApp.PulsarPipeline do
 end
 ```
 
+### Pattern 2: Application-Managed Connection
+
+Pulsar is started globally in your application's supervision tree. This is better for production when you have multiple producers/consumers sharing the same cluster.
+
+```elixir
+# lib/my_app/application.ex
+defmodule MyApp.Application do
+  use Application
+
+  def start(_type, _args) do
+    children = [
+      # Start Pulsar globally
+      {Pulsar, host: "pulsar://localhost:6650"},
+      # Start your Broadway pipelines
+      MyApp.PulsarPipeline
+    ]
+
+    opts = [strategy: :one_for_one, name: MyApp.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+end
+
+# lib/my_app/pulsar_pipeline.ex
+defmodule MyApp.PulsarPipeline do
+  use Broadway
+
+  def start_link(_opts) do
+    Broadway.start_link(__MODULE__,
+      name: __MODULE__,
+      producer: [
+        module: {OffBroadway.Pulsar.Producer,
+          # No host needed - use global connection
+          topic: "persistent://public/default/my-topic",
+          subscription: "my-subscription",
+          consumer_opts: [
+            subscription_type: :Shared
+          ]
+        },
+        concurrency: 1
+      ],
+      processors: [
+        default: [
+          concurrency: 10
+        ]
+      ]
+    )
+  end
+
+  @impl true
+  def handle_message(_processor, message, _context) do
+    IO.inspect(message.data, label: "Received")
+    message
+  end
+end
+```
+
 ## Configuration
 
 ### Producer Options
 
-- `:host` - Broker URL (e.g., `"pulsar://localhost:6650"`) (required)
+- `:host` - Broker URL (e.g., `"pulsar://localhost:6650"`) (optional). If provided, the producer starts its own Pulsar connection. If omitted, assumes Pulsar is already started globally.
 - `:topic` - Pulsar topic to consume from (required)
 - `:subscription` - Subscription name (required)
-- `:conn_opts` - Connection options (optional):
+- `:conn_opts` - Connection options (optional, only used if `:host` is provided):
   - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
   - `:auth` - Authentication configuration:
     - `:type` - Auth module (e.g., `Pulsar.Auth.OAuth2`)
