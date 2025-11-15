@@ -25,8 +25,7 @@ defmodule OffBroadway.Pulsar.Producer do
     :start_message_id,
     :start_timestamp,
     :redelivery_interval,
-    :dead_letter_policy,
-    :consumer_count
+    :dead_letter_policy
   ]
 
   @default_consumer_opts [
@@ -60,7 +59,6 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:start_timestamp` - Start from timestamp
     - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
     - `:dead_letter_policy` - Dead letter queue configuration
-    - `:consumer_count` - Number of consumer processes (default: 1)
 
   Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported
   in `:consumer_opts` because Broadway controls message flow.
@@ -129,6 +127,11 @@ defmodule OffBroadway.Pulsar.Producer do
       |> Keyword.take(@supported_consumer_opts)
       |> Keyword.put(:init_args, [self()])
       |> Keyword.put(:flow_initial, 0)
+
+    # Generate unique name for this producer instance to support producer concurrency
+    # Without this, multiple producers would try to register with the same name
+    unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
+    consumer_opts = Keyword.put(consumer_opts, :name, unique_name)
 
     {:ok, consumer_group} =
       Pulsar.start_consumer(

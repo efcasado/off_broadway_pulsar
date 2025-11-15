@@ -165,9 +165,21 @@ end
   - `:dead_letter_policy` - Dead letter queue configuration:
     - `:max_redelivery` - Maximum redeliveries before sending to DLQ
     - `:topic` - Dead letter topic (optional, defaults to `<topic>-<subscription>-DLQ`)
-  - `:consumer_count` - Number of consumer processes (default: 1)
 
 **Note:** Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported because Broadway controls message flow through its demand mechanism.
+
+### Scaling Consumers
+
+To scale message consumption, use Broadway's `producer: [concurrency: N]` option. Each producer instance starts its own Pulsar consumer, allowing parallel consumption:
+
+```elixir
+producer: [
+  module: {OffBroadway.Pulsar.Producer, ...},
+  concurrency: 3  # Start 3 concurrent producers/consumers
+]
+```
+
+For `:Shared` subscriptions, multiple consumers will automatically share the message load.
 
 ### Example with Authentication
 
