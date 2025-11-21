@@ -32,6 +32,11 @@ defmodule OffBroadway.Pulsar.Producer do
     subscription_type: :Shared
   ]
 
+  # Flow control defaults - matches pulsar-elixir naming convention
+  @default_flow_initial 100
+  @default_flow_threshold 50
+  @default_flow_refill 50
+
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
@@ -60,14 +65,28 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
     - `:dead_letter_policy` - Dead letter queue configuration
 
-  Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported
-  in `:consumer_opts` because Broadway controls message flow.
+  ## Flow Control Options
+
+  The producer uses Pulsar's native permit window flow control. These options
+  match the naming convention used in `pulsar-elixir` consumer:
+
+  - `:flow_initial` - Initial permits requested at startup (optional, default: 100)
+  - `:flow_threshold` - Trigger refill when permits drop to this level (optional, default: 50)
+  - `:flow_refill` - Number of permits to request on each refill (optional, default: 50)
+
+  Note: These flow control options are for the Broadway producer level and override
+  the consumer's automatic flow control (which is disabled by setting `flow_initial: 0`
+  in the underlying consumer).
+
+  Broadway processor demands are satisfied from the already-requested permit window,
+  eliminating per-demand flow requests.
+
+  When using `producer: [concurrency: N]` with N > 1, each producer maintains
+  its own independent permit window.
 
   ## Usage Patterns
 
   ### Pattern 1: Producer-managed connection (host provided)
-  The producer starts its own Pulsar connection. Useful for simple setups or when
-  each producer needs different connection settings.
 
       producer: [
         module: {OffBroadway.Pulsar.Producer,
@@ -78,8 +97,6 @@ defmodule OffBroadway.Pulsar.Producer do
       ]
 
   ### Pattern 2: Application-managed connection (no host)
-  Pulsar is started globally in your supervision tree. Useful when multiple producers
-  share the same cluster or for better resource management.
 
       # In your application.ex:
       children = [
@@ -141,31 +158,65 @@ defmodule OffBroadway.Pulsar.Producer do
         consumer_opts
       )
 
-    # TO-DO: move this logic to pulsar-elixir. Consumer Group should
-    # know how to route messages to the right consumer. Alternatively,
-    # use named consumers so that we can ACK/NACK messages by name.
     # Get the actual consumer process PID (not the supervisor)
-    # Pulsar.start_consumer returns a ConsumerGroup supervisor PID
-    # We need the actual Consumer process PID to call send_flow
     [pulsar_consumer | _] = Pulsar.get_consumers(consumer_group)
+
+    # Extract flow control configuration (matches pulsar-elixir naming)
+    flow_initial =
+      opts
+      |> Keyword.get(:flow_initial, @default_flow_initial)
+      |> validate_positive_integer!(:flow_initial)
+
+    flow_threshold =
+      opts
+      |> Keyword.get(:flow_threshold, @default_flow_threshold)
+      |> validate_positive_integer!(:flow_threshold)
+
+    flow_refill =
+      opts
+      |> Keyword.get(:flow_refill, @default_flow_refill)
+      |> validate_positive_integer!(:flow_refill)
+
+    # Validate threshold < initial (otherwise refill never triggers)
+    if flow_threshold >= flow_initial do
+      raise ArgumentError,
+            "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
+    end
 
     state = %{
       pulsar_consumer: pulsar_consumer,
       demand: 0,
-      buffer: []
+      buffer: [],
+      # Flow control state (Pulsar's native permit window)
+      flow_initial: flow_initial,
+      flow_threshold: flow_threshold,
+      flow_refill: flow_refill,
+      outstanding_permits: 0
     }
+
+    # Send initial flow control permits
+    state = send_initial_flow(state)
 
     {:producer, state}
   end
 
   @impl GenStage
-  def handle_demand(incoming_demand, %{demand: pending_demand, pulsar_consumer: consumer} = state) do
-    :ok = Pulsar.Consumer.send_flow(consumer, incoming_demand)
-    dispatch_messages(%{state | demand: incoming_demand + pending_demand})
+  def handle_demand(incoming_demand, state) do
+    # With permit window, demand doesn't trigger flow requests
+    # Permits are already requested proactively - just track demand
+    new_demand = state.demand + incoming_demand
+    dispatch_messages(%{state | demand: new_demand})
   end
 
   @impl GenStage
   def handle_info({:pulsar_message, message_info}, state) do
+    # Decrement outstanding permits as messages arrive
+    new_outstanding = max(state.outstanding_permits - 1, 0)
+    state = %{state | outstanding_permits: new_outstanding}
+
+    # Check if we need to refill the permit window
+    state = maybe_refill_flow(state)
+
     new_buffer = [message_info | state.buffer]
     dispatch_messages(%{state | buffer: new_buffer})
   end
@@ -204,4 +255,52 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   defp extract_payload({_single_metadata, payload}), do: payload
+
+  # Sends initial flow control permits at startup
+  defp send_initial_flow(state) do
+    case Pulsar.Consumer.send_flow(state.pulsar_consumer, state.flow_initial) do
+      :ok ->
+        Logger.info("Sent initial flow of #{state.flow_initial} permits to Pulsar consumer")
+
+        %{state | outstanding_permits: state.flow_initial}
+
+      {:error, reason} ->
+        Logger.error("Failed to send initial flow: #{inspect(reason)}")
+        state
+    end
+  end
+
+  # Refills permit window when it drops below threshold
+  defp maybe_refill_flow(state) do
+    outstanding = state.outstanding_permits
+    threshold = state.flow_threshold
+    refill_amount = state.flow_refill
+
+    if outstanding <= threshold do
+      case Pulsar.Consumer.send_flow(state.pulsar_consumer, refill_amount) do
+        :ok ->
+          new_outstanding = outstanding + refill_amount
+
+          Logger.debug(
+            "Refilled flow window: #{refill_amount} permits (outstanding: #{outstanding} → #{new_outstanding})"
+          )
+
+          %{state | outstanding_permits: new_outstanding}
+
+        {:error, reason} ->
+          Logger.error("Failed to refill flow window: #{inspect(reason)}")
+          state
+      end
+    else
+      state
+    end
+  end
+
+  # Validation helpers
+  defp validate_positive_integer!(value, _name) when is_integer(value) and value > 0, do: value
+
+  defp validate_positive_integer!(value, name) do
+    raise ArgumentError,
+          "expected :#{name} to be a positive integer, got: #{inspect(value)}"
+  end
 end
