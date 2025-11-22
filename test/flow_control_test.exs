@@ -69,7 +69,8 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
     test "refills when dispatched messages drop permits to threshold" do
       state = %{
         pulsar_consumer: MockConsumer,
-        demand: 100,  # Broadway has demand for messages
+        # Broadway has demand for messages
+        demand: 100,
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -97,7 +98,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       # Buffer should have 51 messages
       assert length(state_with_buffer.buffer) == 51
-      
+
       # Permits still at 100 (not consumed yet)
       assert state_with_buffer.outstanding_permits == 100
 
@@ -151,7 +152,8 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       # Create two separate producers (simulated)
       state1 = %{
         pulsar_consumer: MockConsumer,
-        demand: 10,  # Has demand to dispatch messages
+        # Has demand to dispatch messages
+        demand: 10,
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -187,7 +189,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       # Message buffered, permits unchanged until dispatch
       assert new_state1.outstanding_permits == 100
       assert length(new_state1.buffer) == 1
-      
+
       # state2 unchanged
       assert state2.outstanding_permits == 200
     end
@@ -199,7 +201,8 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       state = %{
         pulsar_consumer: MockConsumer,
-        demand: 100,  # Broadway has demand for messages
+        # Broadway has demand for messages
+        demand: 100,
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -245,7 +248,8 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       # when Broadway isn't demanding them
       state = %{
         pulsar_consumer: MockConsumer,
-        demand: 0,  # NO demand from Broadway
+        # NO demand from Broadway
+        demand: 0,
         buffer: [],
         flow_initial: 10,
         flow_threshold: 5,
