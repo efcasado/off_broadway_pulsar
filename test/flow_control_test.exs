@@ -66,10 +66,10 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       assert state_with_flow.outstanding_permits == 100
     end
 
-    test "refills when permits drop to threshold" do
+    test "refills when dispatched messages drop permits to threshold" do
       state = %{
         pulsar_consumer: MockConsumer,
-        demand: 0,
+        demand: 100,  # Broadway has demand for messages
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -79,7 +79,8 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       MockConsumer.clear_flow_requests()
 
-      # Simulate processing 51 messages (drops to 49, below threshold of 50)
+      # Simulate 51 messages arriving and being dispatched
+      # Permits only decrease when messages are dispatched to Broadway
       message_info = %{
         payload: {nil, "test"},
         message_id: %{},
@@ -90,18 +91,19 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       final_state =
         Enum.reduce(1..51, state, fn _, acc_state ->
-          {:noreply, _, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
+          # Message arrives -> goes to buffer
+          {:noreply, _messages, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
           new_state
         end)
 
-      # Should have triggered refill
+      # Should have triggered refill (51 dispatched drops permits from 100 to 49)
       flow_requests = MockConsumer.get_flow_requests()
       assert length(flow_requests) >= 1
 
       # Should have refilled with flow_refill amount
       assert Enum.any?(flow_requests, fn {permits, _ts} -> permits == 50 end)
 
-      # Outstanding should be above threshold again
+      # Outstanding should be above threshold again (49 + 50 = 99)
       assert final_state.outstanding_permits > final_state.flow_threshold
     end
 
@@ -134,7 +136,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       # Create two separate producers (simulated)
       state1 = %{
         pulsar_consumer: MockConsumer,
-        demand: 0,
+        demand: 10,  # Has demand to dispatch messages
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -144,7 +146,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       state2 = %{
         pulsar_consumer: MockConsumer,
-        demand: 0,
+        demand: 10,
         buffer: [],
         flow_initial: 200,
         flow_threshold: 100,
@@ -156,7 +158,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       assert state1.outstanding_permits == 100
       assert state2.outstanding_permits == 200
 
-      # Process message in state1
+      # Process message in state1 - arrives and gets dispatched
       message_info = %{
         payload: {nil, "test"},
         message_id: %{},
@@ -165,9 +167,9 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
         broker_metadata: %{}
       }
 
-      {:noreply, _, new_state1} = Producer.handle_info({:pulsar_message, message_info}, state1)
+      {:noreply, _messages, new_state1} = Producer.handle_info({:pulsar_message, message_info}, state1)
 
-      # Only state1 affected
+      # Only state1 affected (1 message dispatched, permits drop by 1)
       assert new_state1.outstanding_permits == 99
       assert state2.outstanding_permits == 200
     end
@@ -179,7 +181,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       state = %{
         pulsar_consumer: MockConsumer,
-        demand: 0,
+        demand: 150,  # Broadway has demand for messages
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -189,7 +191,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       MockConsumer.clear_flow_requests()
 
-      # Simulate heavy load: 100 messages
+      # Simulate heavy load: 100 messages arriving and being dispatched
       message_info = %{
         payload: {nil, "test"},
         message_id: %{},
@@ -200,19 +202,83 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       _final_state =
         Enum.reduce(1..100, state, fn _, acc_state ->
-          {:noreply, _, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
+          {:noreply, _messages, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
           new_state
         end)
 
       flow_requests = MockConsumer.get_flow_requests()
 
       # Should have very few requests (refills only)
-      # 100 messages with refill at 50 = ~2 refills
+      # 100 messages dispatched: 100 initial permits consumed
+      # After 50 consumed -> refill 50 (at threshold)
+      # Total: 1-2 refills
       assert length(flow_requests) <= 3
 
-      # Total flow sent should be reasonable
+      # Total flow sent should be reasonable (1-2 refills of 50)
       total_flow = Enum.reduce(flow_requests, 0, fn {permits, _}, acc -> acc + permits end)
       assert total_flow <= 150
+    end
+
+    test "provides true backpressure - no refill when Broadway has no demand" do
+      # This is the critical fix: messages should buffer without triggering refills
+      # when Broadway isn't demanding them
+      state = %{
+        pulsar_consumer: MockConsumer,
+        demand: 0,  # NO demand from Broadway
+        buffer: [],
+        flow_initial: 10,
+        flow_threshold: 5,
+        flow_refill: 5,
+        outstanding_permits: 10
+      }
+
+      MockConsumer.clear_flow_requests()
+
+      # Simulate 10 messages arriving (fills initial permit window)
+      message_info = %{
+        payload: {nil, "test"},
+        message_id: %{},
+        command: %{},
+        metadata: %{},
+        broker_metadata: %{}
+      }
+
+      final_state =
+        Enum.reduce(1..10, state, fn _, acc_state ->
+          {:noreply, _messages, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
+          new_state
+        end)
+
+      # Messages should be buffered
+      assert length(final_state.buffer) == 10
+
+      # Permits should still be 10 (not consumed since not dispatched)
+      assert final_state.outstanding_permits == 10
+
+      # NO refill should have happened (no dispatch = no consumption)
+      flow_requests = MockConsumer.get_flow_requests()
+      assert flow_requests == []
+
+      # Now simulate Broadway demanding messages
+      # handle_demand will dispatch buffered messages immediately
+      {:noreply, dispatched_messages, state_after_dispatch} = Producer.handle_demand(5, final_state)
+
+      # 5 messages should be dispatched (the demand amount)
+      assert length(dispatched_messages) == 5
+
+      # Buffer should have 5 remaining (10 arrived - 5 dispatched)
+      assert length(state_after_dispatch.buffer) == 5
+
+      # Permits consumed (10 - 5 = 5, exactly at threshold)
+      # Refill triggers when outstanding <= threshold, so 5 <= 5 triggers refill
+      # New outstanding: 5 + 5 = 10
+      assert state_after_dispatch.outstanding_permits == 10
+
+      # Should have triggered refill since we hit threshold
+      flow_requests_after = MockConsumer.get_flow_requests()
+      assert length(flow_requests_after) == 1
+      {permits, _timestamp} = List.first(flow_requests_after)
+      assert permits == 5
     end
   end
 end
