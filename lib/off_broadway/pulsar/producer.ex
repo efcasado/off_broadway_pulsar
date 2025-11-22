@@ -205,17 +205,20 @@ defmodule OffBroadway.Pulsar.Producer do
     # With permit window, demand doesn't trigger flow requests
     # Permits are already requested proactively - just track demand
     new_demand = state.demand + incoming_demand
+    Logger.debug("Received demand #{incoming_demand}, total demand: #{new_demand}, buffer: #{length(state.buffer)}")
     dispatch_messages(%{state | demand: new_demand})
   end
 
   @impl GenStage
   def handle_info({:pulsar_message, message_info}, state) do
-    # Add message to buffer but DON'T dispatch
-    # Only dispatch when Broadway explicitly demands via handle_demand
-    # This is critical for GenStage backpressure to work correctly
+    # Add message to buffer
     # Append to maintain FIFO order (oldest messages at head)
     new_buffer = state.buffer ++ [message_info]
-    {:noreply, [], %{state | buffer: new_buffer}}
+    Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
+
+    # If there's pending demand, dispatch immediately
+    # This ensures messages flow when Broadway is waiting
+    dispatch_messages(%{state | buffer: new_buffer})
   end
 
   defp dispatch_messages(%{demand: 0} = state) do
@@ -230,6 +233,7 @@ defmodule OffBroadway.Pulsar.Producer do
     {to_dispatch, remaining} = Enum.split(buffer, demand)
 
     broadway_messages = Enum.map(to_dispatch, &wrap_message(&1, consumer))
+    Logger.debug("Dispatching #{length(to_dispatch)} messages, #{length(remaining)} remaining in buffer")
 
     new_demand = demand - length(to_dispatch)
 
@@ -263,7 +267,7 @@ defmodule OffBroadway.Pulsar.Producer do
   defp send_initial_flow(state) do
     case Pulsar.Consumer.send_flow(state.pulsar_consumer, state.flow_initial) do
       :ok ->
-        Logger.info("Sent initial flow of #{state.flow_initial} permits to Pulsar consumer")
+        Logger.debug("Sent initial flow of #{state.flow_initial} permits to Pulsar consumer")
 
         %{state | outstanding_permits: state.flow_initial}
 
