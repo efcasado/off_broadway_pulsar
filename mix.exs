@@ -23,7 +23,7 @@ defmodule OffBroadwayPulsar.MixProject do
   defp deps do
     [
       {:broadway, "~> 1.2"},
-      {:pulsar, git: "https://github.com/efcasado/pulsar-elixir.git", ref: "6d0e4646e84dbb4d3a22ed04863c605d08c1ed37"},
+      {:pulsar, git: "https://github.com/efcasado/pulsar-elixir.git", ref: "cba0096c1455f5e697756791441679f52d10c3b9"},
       {:styler, "~> 1.2", only: [:dev, :test], runtime: false}
     ]
   end
