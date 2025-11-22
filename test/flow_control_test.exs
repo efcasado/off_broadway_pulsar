@@ -79,8 +79,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       MockConsumer.clear_flow_requests()
 
-      # Simulate 51 messages arriving and being dispatched
-      # Permits only decrease when messages are dispatched to Broadway
+      # Simulate 51 messages arriving (go to buffer, no dispatch yet)
       message_info = %{
         payload: {nil, "test"},
         message_id: %{},
@@ -89,19 +88,35 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
         broker_metadata: %{}
       }
 
-      final_state =
+      state_with_buffer =
         Enum.reduce(1..51, state, fn _, acc_state ->
-          # Message arrives -> goes to buffer
-          {:noreply, _messages, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
+          # Messages arrive -> just buffer, no dispatch
+          {:noreply, [], new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
           new_state
         end)
 
-      # Should have triggered refill (51 dispatched drops permits from 100 to 49)
+      # Buffer should have 51 messages
+      assert length(state_with_buffer.buffer) == 51
+      
+      # Permits still at 100 (not consumed yet)
+      assert state_with_buffer.outstanding_permits == 100
+
+      # No refills yet (no dispatch = no consumption)
       flow_requests = MockConsumer.get_flow_requests()
-      assert length(flow_requests) >= 1
+      assert flow_requests == []
+
+      # Now Broadway demands messages
+      {:noreply, messages, final_state} = Producer.handle_demand(51, state_with_buffer)
+
+      # 51 messages dispatched
+      assert length(messages) == 51
+
+      # Should have triggered refill (51 dispatched drops permits from 100 to 49)
+      flow_requests_after = MockConsumer.get_flow_requests()
+      assert length(flow_requests_after) >= 1
 
       # Should have refilled with flow_refill amount
-      assert Enum.any?(flow_requests, fn {permits, _ts} -> permits == 50 end)
+      assert Enum.any?(flow_requests_after, fn {permits, _ts} -> permits == 50 end)
 
       # Outstanding should be above threshold again (49 + 50 = 99)
       assert final_state.outstanding_permits > final_state.flow_threshold
@@ -158,7 +173,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
       assert state1.outstanding_permits == 100
       assert state2.outstanding_permits == 200
 
-      # Process message in state1 - arrives and gets dispatched
+      # Message arrives in state1 - goes to buffer
       message_info = %{
         payload: {nil, "test"},
         message_id: %{},
@@ -167,10 +182,13 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
         broker_metadata: %{}
       }
 
-      {:noreply, _messages, new_state1} = Producer.handle_info({:pulsar_message, message_info}, state1)
+      {:noreply, [], new_state1} = Producer.handle_info({:pulsar_message, message_info}, state1)
 
-      # Only state1 affected (1 message dispatched, permits drop by 1)
-      assert new_state1.outstanding_permits == 99
+      # Message buffered, permits unchanged until dispatch
+      assert new_state1.outstanding_permits == 100
+      assert length(new_state1.buffer) == 1
+      
+      # state2 unchanged
       assert state2.outstanding_permits == 200
     end
 
@@ -181,7 +199,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       state = %{
         pulsar_consumer: MockConsumer,
-        demand: 150,  # Broadway has demand for messages
+        demand: 100,  # Broadway has demand for messages
         buffer: [],
         flow_initial: 100,
         flow_threshold: 50,
@@ -191,7 +209,7 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
 
       MockConsumer.clear_flow_requests()
 
-      # Simulate heavy load: 100 messages arriving and being dispatched
+      # Simulate heavy load: 100 messages arriving (buffer only)
       message_info = %{
         payload: {nil, "test"},
         message_id: %{},
@@ -200,11 +218,14 @@ defmodule OffBroadway.Pulsar.FlowControlTest do
         broker_metadata: %{}
       }
 
-      _final_state =
+      state_with_buffer =
         Enum.reduce(1..100, state, fn _, acc_state ->
-          {:noreply, _messages, new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
+          {:noreply, [], new_state} = Producer.handle_info({:pulsar_message, message_info}, acc_state)
           new_state
         end)
+
+      # Now dispatch with demand
+      {:noreply, _messages, _final_state} = Producer.handle_demand(100, state_with_buffer)
 
       flow_requests = MockConsumer.get_flow_requests()
 
