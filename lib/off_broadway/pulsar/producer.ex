@@ -213,7 +213,8 @@ defmodule OffBroadway.Pulsar.Producer do
     # Add message to buffer but DON'T dispatch
     # Only dispatch when Broadway explicitly demands via handle_demand
     # This is critical for GenStage backpressure to work correctly
-    new_buffer = [message_info | state.buffer]
+    # Append to maintain FIFO order (oldest messages at head)
+    new_buffer = state.buffer ++ [message_info]
     {:noreply, [], %{state | buffer: new_buffer}}
   end
 
@@ -226,20 +227,18 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   defp dispatch_messages(%{buffer: buffer, demand: demand, pulsar_consumer: consumer} = state) do
-    buffer_fifo = Enum.reverse(buffer)
-    {to_dispatch, remaining} = Enum.split(buffer_fifo, demand)
+    {to_dispatch, remaining} = Enum.split(buffer, demand)
 
     broadway_messages = Enum.map(to_dispatch, &wrap_message(&1, consumer))
 
-    new_buffer = Enum.reverse(remaining)
     new_demand = demand - length(to_dispatch)
-    
+
     # Decrement outstanding permits for dispatched messages
     dispatched_count = length(to_dispatch)
     new_outstanding = max(state.outstanding_permits - dispatched_count, 0)
-    
+
     # Check if we need to refill after dispatching
-    state = %{state | buffer: new_buffer, demand: new_demand, outstanding_permits: new_outstanding}
+    state = %{state | buffer: remaining, demand: new_demand, outstanding_permits: new_outstanding}
     state = maybe_refill_flow(state)
 
     {:noreply, broadway_messages, state}
