@@ -10,9 +10,7 @@ defmodule OffBroadway.Pulsar.Producer do
   @supported_conn_opts [
     :socket_opts,
     :auth,
-    :conn_timeout,
-    :startup_jitter_ms,
-    :start_delay_ms
+    :conn_timeout
   ]
 
   @default_conn_opts []
@@ -25,7 +23,9 @@ defmodule OffBroadway.Pulsar.Producer do
     :start_message_id,
     :start_timestamp,
     :redelivery_interval,
-    :dead_letter_policy
+    :dead_letter_policy,
+    :startup_delay_ms,
+    :startup_jitter_ms
   ]
 
   @default_consumer_opts [
@@ -53,8 +53,6 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
     - `:auth` - Authentication configuration
     - `:conn_timeout` - Connection timeout in milliseconds
-    - `:startup_jitter_ms` - Random startup delay to avoid thundering herd
-    - `:start_delay_ms` - Startup delay in milliseconds
   - `:consumer_opts` - Consumer-specific options passed to `Pulsar.start_consumer/4` (optional):
     - `:subscription_type` - Subscription type (`:Exclusive`, `:Shared`, `:Key_Shared`, default: `:Shared`)
     - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
@@ -64,6 +62,10 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:start_timestamp` - Start from timestamp
     - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
     - `:dead_letter_policy` - Dead letter queue configuration
+    - `:startup_delay_ms` - Fixed startup delay in milliseconds before consumer initialization (default: 0)
+    - `:startup_jitter_ms` - Random startup delay (0 to N ms) to avoid thundering herd on consumer restart (default: 0)
+
+  The total consumer startup delay is `startup_delay_ms + random(0, startup_jitter_ms)`, applied on every consumer start/restart.
 
   ## Flow Control Options
 
