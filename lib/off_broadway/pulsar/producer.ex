@@ -210,13 +210,8 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def handle_info({:pulsar_message, message_info}, state) do
-    # Decrement outstanding permits as messages arrive
-    new_outstanding = max(state.outstanding_permits - 1, 0)
-    state = %{state | outstanding_permits: new_outstanding}
-
-    # Check if we need to refill the permit window
-    state = maybe_refill_flow(state)
-
+    # Add message to buffer - don't decrement permits yet
+    # Permits are consumed when messages are dispatched to Broadway
     new_buffer = [message_info | state.buffer]
     dispatch_messages(%{state | buffer: new_buffer})
   end
@@ -237,8 +232,16 @@ defmodule OffBroadway.Pulsar.Producer do
 
     new_buffer = Enum.reverse(remaining)
     new_demand = demand - length(to_dispatch)
+    
+    # Decrement outstanding permits for dispatched messages
+    dispatched_count = length(to_dispatch)
+    new_outstanding = max(state.outstanding_permits - dispatched_count, 0)
+    
+    # Check if we need to refill after dispatching
+    state = %{state | buffer: new_buffer, demand: new_demand, outstanding_permits: new_outstanding}
+    state = maybe_refill_flow(state)
 
-    {:noreply, broadway_messages, %{state | buffer: new_buffer, demand: new_demand}}
+    {:noreply, broadway_messages, state}
   end
 
   defp wrap_message(message_info, consumer) do
