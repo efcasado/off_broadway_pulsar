@@ -210,10 +210,11 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def handle_info({:pulsar_message, message_info}, state) do
-    # Add message to buffer - don't decrement permits yet
-    # Permits are consumed when messages are dispatched to Broadway
+    # Add message to buffer but DON'T dispatch
+    # Only dispatch when Broadway explicitly demands via handle_demand
+    # This is critical for GenStage backpressure to work correctly
     new_buffer = [message_info | state.buffer]
-    dispatch_messages(%{state | buffer: new_buffer})
+    {:noreply, [], %{state | buffer: new_buffer}}
   end
 
   defp dispatch_messages(%{demand: 0} = state) do
