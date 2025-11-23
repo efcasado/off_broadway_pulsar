@@ -37,6 +37,9 @@ defmodule OffBroadway.Pulsar.Producer do
   @default_flow_threshold 50
   @default_flow_refill 50
 
+  # Initial flow delay to wait for consumer async initialization
+  @initial_flow_delay_ms 5000
+
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
@@ -160,9 +163,6 @@ defmodule OffBroadway.Pulsar.Producer do
         consumer_opts
       )
 
-    # Get the actual consumer process PID (not the supervisor)
-    [pulsar_consumer | _] = Pulsar.get_consumers(consumer_group)
-
     # Extract flow control configuration (matches pulsar-elixir naming)
     flow_initial =
       opts
@@ -186,18 +186,19 @@ defmodule OffBroadway.Pulsar.Producer do
     end
 
     state = %{
-      pulsar_consumer: pulsar_consumer,
+      consumer_group: consumer_group,
       demand: 0,
       buffer: [],
-      # Flow control state (Pulsar's native permit window)
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
       flow_refill: flow_refill,
       outstanding_permits: 0
     }
 
-    # Send initial flow control permits
-    state = send_initial_flow(state)
+    # Defer initial flow control to allow consumer to complete async initialization
+    # The consumer starts asynchronously with handle_continue and has startup delays:
+    # startup_delay_ms (default 1000ms) + startup_jitter_ms (default 1000ms) + subscribe/seek time
+    Process.send_after(self(), :send_initial_flow, 0)
 
     {:producer, state}
   end
@@ -212,6 +213,29 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   @impl GenStage
+  def handle_info(:send_initial_flow, state) do
+    # We wait @initial_flow_delay_ms to ensure consumer is ready
+    Process.sleep(@initial_flow_delay_ms)
+    # Send initial flow control permits after consumer is ready
+    # Get current consumer PID dynamically in case it has restarted
+    case get_consumer_pid(state.consumer_group) do
+      {:ok, consumer_pid} ->
+        case Pulsar.Consumer.send_flow(consumer_pid, state.flow_initial) do
+          :ok ->
+            Logger.debug("Sent initial flow of #{state.flow_initial} permits to Pulsar consumer")
+            {:noreply, [], %{state | outstanding_permits: state.flow_initial}}
+
+          {:error, reason} ->
+            Logger.error("Failed to send initial flow: #{inspect(reason)}")
+            {:noreply, [], state}
+        end
+
+      {:error, reason} ->
+        Logger.error("Failed to get consumer PID: #{inspect(reason)}")
+        {:noreply, [], state}
+    end
+  end
+
   def handle_info({:pulsar_message, message_info}, state) do
     # Add message to buffer
     # Append to maintain FIFO order (oldest messages at head)
@@ -231,10 +255,18 @@ defmodule OffBroadway.Pulsar.Producer do
     {:noreply, [], %{state | demand: demand}}
   end
 
-  defp dispatch_messages(%{buffer: buffer, demand: demand, pulsar_consumer: consumer} = state) do
+  defp dispatch_messages(%{buffer: buffer, demand: demand, consumer_group: consumer_group} = state) do
     {to_dispatch, remaining} = Enum.split(buffer, demand)
 
-    broadway_messages = Enum.map(to_dispatch, &wrap_message(&1, consumer))
+    # Get current consumer PID for acknowledger
+    consumer_pid =
+      case get_consumer_pid(consumer_group) do
+        {:ok, pid} -> pid
+        # Will fail on ACK, but let message through
+        {:error, _} -> nil
+      end
+
+    broadway_messages = Enum.map(to_dispatch, &wrap_message(&1, consumer_pid))
     Logger.debug("Dispatching #{length(to_dispatch)} messages, #{length(remaining)} remaining in buffer")
 
     new_demand = demand - length(to_dispatch)
@@ -265,20 +297,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
   defp extract_payload({_single_metadata, payload}), do: payload
 
-  # Sends initial flow control permits at startup
-  defp send_initial_flow(state) do
-    case Pulsar.Consumer.send_flow(state.pulsar_consumer, state.flow_initial) do
-      :ok ->
-        Logger.debug("Sent initial flow of #{state.flow_initial} permits to Pulsar consumer")
-
-        %{state | outstanding_permits: state.flow_initial}
-
-      {:error, reason} ->
-        Logger.error("Failed to send initial flow: #{inspect(reason)}")
-        state
-    end
-  end
-
   # Refills permit window when it drops below threshold
   defp maybe_refill_flow(state) do
     outstanding = state.outstanding_permits
@@ -286,22 +304,39 @@ defmodule OffBroadway.Pulsar.Producer do
     refill_amount = state.flow_refill
 
     if outstanding <= threshold do
-      case Pulsar.Consumer.send_flow(state.pulsar_consumer, refill_amount) do
-        :ok ->
-          new_outstanding = outstanding + refill_amount
+      # Get current consumer PID dynamically in case it has restarted
+      case get_consumer_pid(state.consumer_group) do
+        {:ok, consumer_pid} ->
+          case Pulsar.Consumer.send_flow(consumer_pid, refill_amount) do
+            :ok ->
+              new_outstanding = outstanding + refill_amount
 
-          Logger.debug(
-            "Refilled flow window: #{refill_amount} permits (outstanding: #{outstanding} → #{new_outstanding})"
-          )
+              Logger.debug(
+                "Refilled flow window: #{refill_amount} permits (outstanding: #{outstanding} → #{new_outstanding})"
+              )
 
-          %{state | outstanding_permits: new_outstanding}
+              %{state | outstanding_permits: new_outstanding}
+
+            {:error, reason} ->
+              Logger.error("Failed to refill flow window: #{inspect(reason)}")
+              state
+          end
 
         {:error, reason} ->
-          Logger.error("Failed to refill flow window: #{inspect(reason)}")
+          Logger.error("Failed to get consumer PID for refill: #{inspect(reason)}")
           state
       end
     else
       state
+    end
+  end
+
+  # Gets the current consumer PID from the consumer group
+  # This is called dynamically to handle consumer restarts
+  defp get_consumer_pid(consumer_group) do
+    case Pulsar.get_consumers(consumer_group) do
+      [consumer_pid | _] -> {:ok, consumer_pid}
+      [] -> {:error, :no_consumers}
     end
   end
 
