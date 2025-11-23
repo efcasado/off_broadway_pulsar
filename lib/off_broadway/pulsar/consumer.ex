@@ -4,6 +4,9 @@ defmodule OffBroadway.Pulsar.Consumer do
 
   @impl true
   def init([broadway_producer]) do
+    # Notify producer that consumer is ready and needs initial flow
+    # This is sent on first startup AND on every consumer restart
+    send(broadway_producer, {:consumer_ready, self()})
     {:ok, %{broadway_producer: broadway_producer}}
   end
 
