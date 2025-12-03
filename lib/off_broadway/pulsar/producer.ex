@@ -264,20 +264,19 @@ defmodule OffBroadway.Pulsar.Producer do
     {:noreply, broadway_messages, state}
   end
 
-  defp wrap_message(message_info, consumer) do
+  defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer) do
     %Message{
-      data: extract_payload(message_info.payload),
+      data: pulsar_message.payload,
       metadata: %{
-        message_id: message_info.message_id,
-        command: message_info.command,
-        metadata: message_info.metadata,
-        broker_metadata: message_info.broker_metadata
+        message_id: pulsar_message.message_id_to_ack,
+        command: pulsar_message.command,
+        metadata: pulsar_message.metadata,
+        single_metadata: pulsar_message.single_metadata,
+        broker_metadata: pulsar_message.broker_metadata
       },
-      acknowledger: {OffBroadway.Pulsar.Acknowledger, %{consumer: consumer}, message_info.message_id}
+      acknowledger: {OffBroadway.Pulsar.Acknowledger, %{consumer: consumer}, pulsar_message.message_id_to_ack}
     }
   end
-
-  defp extract_payload({_single_metadata, payload}), do: payload
 
   # Refills permit window when it drops below threshold
   defp maybe_refill_flow(state) do
