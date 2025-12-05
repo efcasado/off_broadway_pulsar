@@ -24,6 +24,7 @@ jobs:
     - name: Publish package to Hex
       shell: 'script -q -e -c "bash --noprofile --norc -eo pipefail {0}"'
       run: |
+        mix deps.get
         mix local.hex --force
         mix hex.publish --yes
       env:
