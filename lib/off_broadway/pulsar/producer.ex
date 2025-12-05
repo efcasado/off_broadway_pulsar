@@ -1,5 +1,18 @@
 defmodule OffBroadway.Pulsar.Producer do
-  @moduledoc false
+  @moduledoc """
+  A Broadway producer for Apache Pulsar.
+
+  This producer receives messages from Pulsar topics and forwards them to the
+  Broadway pipeline. It implements flow control using Pulsar's permit window
+  mechanism, which proactively requests batches of messages rather than
+  requesting per-message.
+
+  Supports two connection patterns:
+  - **Producer-managed**: Pass `:host` to have the producer start its own Pulsar connection
+  - **Application-managed**: Omit `:host` to use a globally started Pulsar connection
+
+  See `start_link/1` for detailed configuration options.
+  """
 
   use GenStage
 
