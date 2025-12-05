@@ -1,0 +1,22 @@
+## 1.0.0 (2025-12-05)
+
+### Features
+
+* optional pulsar connection ([0ebb96b](https://github.com/efcasado/off_broadway_pulsar/commit/0ebb96b6776b031a0992e9ebd656b06d224e3e87))
+* producer concurrency ([d430692](https://github.com/efcasado/off_broadway_pulsar/commit/d430692a76729618ed41df881d2eb875a1f7203c))
+* support all pulsar-elixir options ([454d20e](https://github.com/efcasado/off_broadway_pulsar/commit/454d20e5d75bd409ae3c8da8eb46837ae38bff7f))
+
+### Bug Fixes
+
+* align demand handling with pulsar native flow control ([f9ba1de](https://github.com/efcasado/off_broadway_pulsar/commit/f9ba1defb2306a02cfb6aa7742198bbc6ffcd27e))
+* back pressure bug ([40faa92](https://github.com/efcasado/off_broadway_pulsar/commit/40faa9257a3e3c050f2a47585ef6165b34c42454))
+* batched acknowledgements ([a2a094e](https://github.com/efcasado/off_broadway_pulsar/commit/a2a094e880092d130f7057278fcb99320a036bb2))
+* dispatch message when pipeline waiting for demand ([0484272](https://github.com/efcasado/off_broadway_pulsar/commit/0484272a0c79059bbe351a74d50321ec09526cf3))
+* dispatch messages in order ([d805b98](https://github.com/efcasado/off_broadway_pulsar/commit/d805b9827248b1aa301dac759b1f4e6d746fa922))
+* do not ignore startup delay and jitter ([10097ec](https://github.com/efcasado/off_broadway_pulsar/commit/10097ec31ee4828ca61185d2260c33cbbdcddcaf))
+* do not start pulsar app automatically ([ffb8c22](https://github.com/efcasado/off_broadway_pulsar/commit/ffb8c222c9dc1cbba3178cb5cf12013e53555c7a))
+* dynamic pulsar consumer process ([a632b1e](https://github.com/efcasado/off_broadway_pulsar/commit/a632b1e7f35ee61ee4a577cb4c25ac8b009ddbcb))
+* only dispatch messages based on demand ([81d34e9](https://github.com/efcasado/off_broadway_pulsar/commit/81d34e92f1f165783319df13ae719be4e0525dfa))
+* pipeline stops on consumer restart ([42e0324](https://github.com/efcasado/off_broadway_pulsar/commit/42e03244280dd86c4c5f4e17cc2f43e96989c374))
+* stale consumer when using DLQ policy ([da89a9d](https://github.com/efcasado/off_broadway_pulsar/commit/da89a9da31ae0b0afc5c5f4dd42a8fafd3641fe4))
+* wrong function clause in consumer ([f2e1625](https://github.com/efcasado/off_broadway_pulsar/commit/f2e1625fba1ebb234a02d70e97a0f719adc5cad5))
