@@ -1,14 +1,20 @@
-# OffBroadwayPulsar
+[![CI](https://github.com/efcasado/off_broadway_pulsar/actions/workflows/ci.yml/badge.svg)](https://github.com/efcasado/off_broadway_pulsar/actions/workflows/ci.yml)
+[![Package Version](https://img.shields.io/hexpm/v/off_broadway_pulsar.svg)](https://hex.pm/packages/off_broadway_pulsar)
+[![hexdocs.pm](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/off_broadway_pulsar/)
+
+# Broadway Producer for Pulsar
 
 A [Broadway](https://github.com/dashbitco/broadway) producer for [Apache Pulsar](https://pulsar.apache.org/).
 
 This library provides a Broadway producer that integrates with Apache Pulsar, allowing you to build data ingestion and processing pipelines with Broadway's features like concurrent processing, batching, automatic acknowledgements, and graceful shutdown.
 
+Underneath, this library uses [pulsar-elixir](https://github.com/efcasado/pulsar-elixir/) to interact with Pulsar.
+
 ## Features
 
 - **Broadway Integration**: Leverage Broadway's robust pipeline features (batching, rate limiting, graceful shutdown)
 - **Manual Acknowledgement**: Full control over message acknowledgement with Broadway's built-in acknowledger
-- **Backpressure**: Broadway's demand mechanism controls Pulsar message flow
+- **Flow Control**: Permit window-based flow control for efficient message batching
 - **Dead Letter Queue**: Automatic DLQ support through the underlying Pulsar client
 - **Redelivery**: Configurable message redelivery on failure
 
@@ -20,8 +26,7 @@ by adding `off_broadway_pulsar` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:off_broadway_pulsar, "~> 0.1.0"},
-    {:broadway, "~> 1.0"}
+    {:off_broadway_pulsar, "~> 0.1.0"}
   ]
 end
 ```
@@ -152,8 +157,6 @@ end
     - `:type` - Auth module (e.g., `Pulsar.Auth.OAuth2`)
     - `:opts` - Auth-specific options
   - `:conn_timeout` - Connection timeout in milliseconds
-  - `:startup_jitter_ms` - Random startup delay to avoid thundering herd
-  - `:start_delay_ms` - Startup delay in milliseconds
 - `:consumer_opts` - Consumer-specific options (optional):
   - `:subscription_type` - Subscription type (`:Exclusive`, `:Shared`, `:Key_Shared`, default: `:Shared`)
   - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
@@ -165,8 +168,13 @@ end
   - `:dead_letter_policy` - Dead letter queue configuration:
     - `:max_redelivery` - Maximum redeliveries before sending to DLQ
     - `:topic` - Dead letter topic (optional, defaults to `<topic>-<subscription>-DLQ`)
+  - `:startup_delay_ms` - Fixed startup delay in milliseconds before consumer initialization (default: 0)
+  - `:startup_jitter_ms` - Random startup delay (0 to N ms) to avoid thundering herd on consumer restart (default: 0)
+- `:flow_initial` - Initial permits requested at startup (optional, default: 100)
+- `:flow_threshold` - Trigger refill when permits drop to this level (optional, default: 50)
+- `:flow_refill` - Number of permits to request on each refill (optional, default: 50)
 
-**Note:** Flow control options (`:flow_initial`, `:flow_threshold`, `:flow_refill`) are not supported because Broadway controls message flow through its demand mechanism.
+**Note:** The producer uses Pulsar's permit window flow control mechanism. Broadway processor demands are satisfied from the already-requested permit window, eliminating per-demand flow requests. When using `producer: [concurrency: N]` with N > 1, each producer maintains its own independent permit window.
 
 ### Scaling Consumers
 

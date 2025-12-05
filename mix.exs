@@ -7,7 +7,18 @@ defmodule OffBroadwayPulsar.MixProject do
       version: "0.1.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      consolidate_protocols: Mix.env() != :test,
+      dialyzer: [
+        plt_add_apps: [:pulsar]
+      ],
+      description: description(),
+      package: package(),
+      source_url: "https://github.com/efcasado/off_broadway_pulsar",
+      docs: [
+        main: "OffBroadway.Pulsar.Producer",
+        extras: ["README.md"]
+      ]
     ]
   end
 
@@ -23,8 +34,27 @@ defmodule OffBroadwayPulsar.MixProject do
   defp deps do
     [
       {:broadway, "~> 1.2"},
-      {:pulsar, git: "https://github.com/efcasado/pulsar-elixir.git", tag: "v2.2.1"},
+      {:pulsar, "~> 2.2.6", hex: :pulsar_elixir},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.39.1", only: :dev, runtime: false},
       {:styler, "~> 1.2", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp description do
+    "A Broadway producer for Apache Pulsar."
+  end
+
+  defp package do
+    [
+      name: "off_broadway_pulsar",
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
+      licenses: ~w(MIT),
+      links: %{
+        "GitHub" => "https://github.com/efcasado/off_broadway_pulsar",
+        "Changelog" => "https://github.com/efcasado/off_broadway_pulsar/blob/main/CHANGELOG.md"
+      }
     ]
   end
 end
