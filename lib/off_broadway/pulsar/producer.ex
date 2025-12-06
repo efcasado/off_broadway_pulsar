@@ -60,6 +60,8 @@ defmodule OffBroadway.Pulsar.Producer do
     If provided, the producer will start its own Pulsar connection.
     If not provided, the producer assumes Pulsar is already started globally
     (e.g., in your application's supervision tree).
+  - `:client` - Client name to use when `:host` is not provided (optional, default: `:default`).
+    Only used when connecting to a globally started Pulsar instance.
   - `:topic` - The Pulsar topic to consume from (required)
   - `:subscription` - The subscription name (required)
   - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
@@ -135,6 +137,7 @@ defmodule OffBroadway.Pulsar.Producer do
   def init(opts) do
     topic = Keyword.fetch!(opts, :topic)
     subscription = Keyword.fetch!(opts, :subscription)
+    client = Keyword.get(opts, :client, :default)
 
     # Only start Pulsar if host is provided (producer-managed connection)
     # Otherwise, assume Pulsar is already started globally (application-managed connection)
@@ -159,6 +162,7 @@ defmodule OffBroadway.Pulsar.Producer do
       |> Keyword.take(@supported_consumer_opts)
       |> Keyword.put(:init_args, [self()])
       |> Keyword.put(:flow_initial, 0)
+      |> Keyword.put(:client, client)
 
     # Generate unique name for this producer instance to support producer concurrency
     # Without this, multiple producers would try to register with the same name
