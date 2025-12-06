@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.0.4...v1.1.0) (2025-12-06)
+
+### Features
+
+* support pulsar-elixir multi-client architecture ([93ba3fc](https://github.com/efcasado/off_broadway_pulsar/commit/93ba3fc87b97c6b89d5197764485d744e71ff5a5))
+
 ## [1.0.4](https://github.com/efcasado/off_broadway_pulsar/compare/v1.0.3...v1.0.4) (2025-12-05)
 
 ## [1.0.3](https://github.com/efcasado/off_broadway_pulsar/compare/v1.0.2...v1.0.3) (2025-12-05)
