@@ -261,7 +261,7 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   defp dispatch_messages(%{buffer: buffer, demand: demand, consumer_pid: consumer_pid} = state) do
-    {to_dispatch, remaining} = Enum.split(buffer, demand)
+    {to_dispatch, to_drop, remaining} = pull_messages(buffer, demand)
 
     # Use tracked consumer PID for acknowledger
     # If consumer_pid is nil, messages will fail on ACK, but we let them through
@@ -271,7 +271,7 @@ defmodule OffBroadway.Pulsar.Producer do
     new_demand = demand - length(to_dispatch)
 
     # Decrement outstanding permits for dispatched messages
-    dispatched_count = length(to_dispatch)
+    dispatched_count = demand(to_dispatch, to_drop)
     new_outstanding = max(state.outstanding_permits - dispatched_count, 0)
 
     # Check if we need to refill after dispatching
@@ -279,6 +279,32 @@ defmodule OffBroadway.Pulsar.Producer do
     state = maybe_refill_flow(state)
 
     {:noreply, broadway_messages, state}
+  end
+
+  defp pull_messages(buffer, demand) do
+    {to_dispatch, to_drop, remaining, _count} =
+      Enum.reduce(buffer, {[], [], [], 0}, fn msg, {dispatch, drop, rest, count} ->
+        cond do
+          match?(%{chunked: true, complete: false}, msg) ->
+            {dispatch, [msg | drop], rest, count}
+
+          count < demand ->
+            {[msg | dispatch], drop, rest, count + 1}
+
+          true ->
+            {dispatch, drop, [msg | rest], count}
+        end
+      end)
+
+    {
+      Enum.reverse(to_dispatch),
+      Enum.reverse(to_drop),
+      Enum.reverse(remaining)
+    }
+  end
+
+  defp demand(dispatched, dropped) do
+    Enum.sum(Enum.map(dispatched ++ dropped, &Pulsar.Message.num_broker_messages/1))
   end
 
   defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer) do
