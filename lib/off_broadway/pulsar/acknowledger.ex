@@ -4,10 +4,18 @@ defmodule OffBroadway.Pulsar.Acknowledger do
 
   @impl Broadway.Acknowledger
   def ack(%{consumer: consumer}, successful, failed) do
-    ack_ids = Enum.map(successful, fn %{acknowledger: {_, _, message_id}} -> message_id end)
+    ack_ids =
+      Enum.flat_map(successful, fn %{acknowledger: {_, _, message_id}} ->
+        List.wrap(message_id)
+      end)
+
     :ok = Pulsar.ack(consumer, ack_ids)
 
-    nack_ids = Enum.map(failed, fn %{acknowledger: {_, _, message_id}} -> message_id end)
+    nack_ids =
+      Enum.flat_map(failed, fn %{acknowledger: {_, _, message_id}} ->
+        List.wrap(message_id)
+      end)
+
     :ok = Pulsar.nack(consumer, nack_ids)
   end
 end
