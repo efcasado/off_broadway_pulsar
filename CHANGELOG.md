@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.1.0...v1.2.0) (2025-12-14)
+
+### Features
+
+* add support for message chunking ([29facd1](https://github.com/efcasado/off_broadway_pulsar/commit/29facd1433884223cc0f481c6cb7cfabbe0b9f87))
+
 ## [1.1.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.0.4...v1.1.0) (2025-12-06)
 
 ### Features
