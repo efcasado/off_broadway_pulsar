@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/efcasado/off_broadway_pulsar/compare/v1.2.0...v1.2.1) (2025-12-15)
+
+### Bug Fixes
+
+* missing chunking-related options ([296d462](https://github.com/efcasado/off_broadway_pulsar/commit/296d46210901f3ca6d4acb8095fb21c9184d968c))
+* missing compaction-related settings ([8868e05](https://github.com/efcasado/off_broadway_pulsar/commit/8868e053f759af62ce127cddf6251dd7e173ea12))
+
 ## [1.2.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.1.0...v1.2.0) (2025-12-14)
 
 ### Features
