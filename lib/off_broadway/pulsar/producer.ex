@@ -38,7 +38,10 @@ defmodule OffBroadway.Pulsar.Producer do
     :redelivery_interval,
     :dead_letter_policy,
     :startup_delay_ms,
-    :startup_jitter_ms
+    :startup_jitter_ms,
+    :max_pending_chunked_messages,
+    :expire_incomplete_chunked_message_after,
+    :chunk_cleanup_interval
   ]
 
   @default_consumer_opts [
@@ -79,6 +82,9 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:dead_letter_policy` - Dead letter queue configuration
     - `:startup_delay_ms` - Fixed startup delay in milliseconds before consumer initialization (default: 0)
     - `:startup_jitter_ms` - Random startup delay (0 to N ms) to avoid thundering herd on consumer restart (default: 0)
+    - `:max_pending_chunked_messages` - Maximum number of concurrent chunked messages to buffer (default: 10)
+    - `:expire_incomplete_chunked_message_after` - Timeout in milliseconds for incomplete chunked messages (default: 60_000)
+    - `:chunk_cleanup_interval` - Interval in milliseconds for checking expired chunked messages (default: 30_000)
 
   The total consumer startup delay is `startup_delay_ms + random(0, startup_jitter_ms)`, applied on every consumer start/restart.
 
