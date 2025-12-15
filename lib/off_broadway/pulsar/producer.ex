@@ -41,7 +41,8 @@ defmodule OffBroadway.Pulsar.Producer do
     :startup_jitter_ms,
     :max_pending_chunked_messages,
     :expire_incomplete_chunked_message_after,
-    :chunk_cleanup_interval
+    :chunk_cleanup_interval,
+    :read_compacted
   ]
 
   @default_consumer_opts [
@@ -85,6 +86,7 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:max_pending_chunked_messages` - Maximum number of concurrent chunked messages to buffer (default: 10)
     - `:expire_incomplete_chunked_message_after` - Timeout in milliseconds for incomplete chunked messages (default: 60_000)
     - `:chunk_cleanup_interval` - Interval in milliseconds for checking expired chunked messages (default: 30_000)
+    - `:read_compacted` - If true, reads messages from the compacted topic ledger (default: false)
 
   The total consumer startup delay is `startup_delay_ms + random(0, startup_jitter_ms)`, applied on every consumer start/restart.
 
