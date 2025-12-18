@@ -76,3 +76,14 @@ jobs:
 
     - name: Check Dialyzer
       run: mix dialyzer --format github --format dialyxir
+
+    - name: Run tests
+      run: mix coveralls.github
+
+    - name: Publish Test Report
+      uses: dorny/test-reporter@v2.2.0
+      if: always()
+      with:
+        name: Test Results
+        path: test/reports/junit.xml
+        reporter: java-junit
