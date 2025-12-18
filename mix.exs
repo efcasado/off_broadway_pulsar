@@ -7,8 +7,16 @@ defmodule OffBroadwayPulsar.MixProject do
       version: "1.2.1",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       consolidate_protocols: Mix.env() != :test,
+      test_coverage: [tool: ExCoveralls],
+      preferred_cli_env: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.post": :test,
+        "coveralls.html": :test
+      ],
       dialyzer: [
         plt_add_apps: [:pulsar]
       ],
@@ -38,7 +46,9 @@ defmodule OffBroadwayPulsar.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.39.1", only: :dev, runtime: false},
-      {:styler, "~> 1.2", only: [:dev, :test], runtime: false}
+      {:styler, "~> 1.2", only: [:dev, :test], runtime: false},
+      {:junit_formatter, "~> 3.3", only: :test},
+      {:excoveralls, "~> 0.18.5", only: :test}
     ]
   end
 
@@ -57,4 +67,7 @@ defmodule OffBroadwayPulsar.MixProject do
       }
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 end

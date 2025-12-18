@@ -1,0 +1,15 @@
+services:
+  pulsar:
+    image: apachepulsar/pulsar:4.0.2
+    container_name: pulsar
+    command: bin/pulsar standalone
+    environment:
+      - PULSAR_MEM=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=256m
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/metrics/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
