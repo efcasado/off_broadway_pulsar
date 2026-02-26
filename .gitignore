@@ -24,3 +24,5 @@ off_broadway_pulsar-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+/test/reports

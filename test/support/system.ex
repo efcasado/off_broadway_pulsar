@@ -16,6 +16,21 @@ defmodule OffBroadwayPulsar.Test.Support.System do
     {_output, 0} = System.cmd("docker", ["compose", "down", "-v"])
   end
 
+  @doc """
+  Creates a Pulsar topic via pulsar-admin inside the running container.
+  Idempotent: succeeds even if the topic already exists.
+  """
+  def create_topic(topic) do
+    {_output, _exit_code} =
+      System.cmd(
+        "docker",
+        ["exec", "pulsar", "bin/pulsar-admin", "topics", "create", topic],
+        stderr_to_stdout: true
+      )
+
+    :ok
+  end
+
   defp wait_for_pulsar(retries \\ 30) do
     if retries == 0 do
       raise "Pulsar failed to become healthy"
