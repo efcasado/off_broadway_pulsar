@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.2.11...v1.3.0) (2026-02-27)
+
+### Features
+
+* add support for multi-topic producers ([#39](https://github.com/efcasado/off_broadway_pulsar/issues/39)) ([7e37e29](https://github.com/efcasado/off_broadway_pulsar/commit/7e37e29ac2a46229b3f7697ce9e851a9f4499924))
+
 ## [1.2.11](https://github.com/efcasado/off_broadway_pulsar/compare/v1.2.10...v1.2.11) (2026-02-27)
 
 ## [1.2.10](https://github.com/efcasado/off_broadway_pulsar/compare/v1.2.9...v1.2.10) (2026-02-20)
