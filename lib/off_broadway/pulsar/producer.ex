@@ -66,13 +66,17 @@ defmodule OffBroadway.Pulsar.Producer do
     (e.g., in your application's supervision tree).
   - `:client` - Client name to use when `:host` is not provided (optional, default: `:default`).
     Only used when connecting to a globally started Pulsar instance.
-  - `:topic` - The Pulsar topic to consume from (required)
+  - `:topic` - A single Pulsar topic to consume from (required if `:topics` is not set)
+  - `:topics` - A list of Pulsar topics to consume from (required if `:topic` is not set).
+    One consumer is started per topic. Providing a single topic via `:topic` is equivalent
+    to `topics: [topic]` and is kept for backwards compatibility.
   - `:subscription` - The subscription name (required)
   - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
     - `:auth` - Authentication configuration
     - `:conn_timeout` - Connection timeout in milliseconds
-  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.start_consumer/4` (optional):
+  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.start_consumer/4` (optional).
+    Applied to all topics when using `:topics`.
     - `:subscription_type` - Subscription type (`:Exclusive`, `:Shared`, `:Key_Shared`, default: `:Shared`)
     - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
     - `:durable` - Whether subscription is durable (default: `true`)
@@ -111,7 +115,7 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Usage Patterns
 
-  ### Pattern 1: Producer-managed connection (host provided)
+  ### Pattern 1: Single topic
 
       producer: [
         module: {OffBroadway.Pulsar.Producer,
@@ -121,7 +125,17 @@ defmodule OffBroadway.Pulsar.Producer do
         }
       ]
 
-  ### Pattern 2: Application-managed connection (no host)
+  ### Pattern 2: Multiple topics
+
+      producer: [
+        module: {OffBroadway.Pulsar.Producer,
+          host: "pulsar://localhost:6650",
+          topics: ["topic-a", "topic-b", "topic-c"],
+          subscription: "my-subscription"
+        }
+      ]
+
+  ### Pattern 3: Application-managed connection (no host)
 
       # In your application.ex:
       children = [
@@ -132,7 +146,7 @@ defmodule OffBroadway.Pulsar.Producer do
       # In your producer config:
       producer: [
         module: {OffBroadway.Pulsar.Producer,
-          topic: "my-topic",
+          topics: ["topic-a", "topic-b"],
           subscription: "my-subscription"
         }
       ]
@@ -143,7 +157,20 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def init(opts) do
-    topic = Keyword.fetch!(opts, :topic)
+    # Accept either :topic (single, backwards-compatible) or :topics (list).
+    # Both are normalized to a list internally.
+    topics =
+      cond do
+        Keyword.has_key?(opts, :topics) ->
+          Keyword.fetch!(opts, :topics)
+
+        Keyword.has_key?(opts, :topic) ->
+          [Keyword.fetch!(opts, :topic)]
+
+        true ->
+          raise ArgumentError, "either :topic or :topics is required"
+      end
+
     subscription = Keyword.fetch!(opts, :subscription)
     client = Keyword.get(opts, :client, :default)
 
@@ -164,26 +191,36 @@ defmodule OffBroadway.Pulsar.Producer do
         :ok
     end
 
-    consumer_opts =
+    consumer_opts_base =
       opts
       |> Keyword.get(:consumer_opts, @default_consumer_opts)
       |> Keyword.take(@supported_consumer_opts)
-      |> Keyword.put(:init_args, [self()])
       |> Keyword.put(:flow_initial, 0)
       |> Keyword.put(:client, client)
 
-    # Generate unique name for this producer instance to support producer concurrency
-    # Without this, multiple producers would try to register with the same name
-    unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
-    consumer_opts = Keyword.put(consumer_opts, :name, unique_name)
+    # Start one consumer group per topic. Each group gets a unique name to
+    # support both multi-topic and producer concurrency > 1.
+    # init_args includes the topic so the consumer can send it back as a
+    # stable map key, replacing stale PIDs on restart without accumulation.
+    consumer_groups =
+      Enum.map(topics, fn topic ->
+        unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
 
-    {:ok, consumer_group} =
-      Pulsar.start_consumer(
-        topic,
-        subscription,
-        OffBroadway.Pulsar.Consumer,
-        consumer_opts
-      )
+        topic_opts =
+          consumer_opts_base
+          |> Keyword.put(:name, unique_name)
+          |> Keyword.put(:init_args, [self(), topic])
+
+        {:ok, group} =
+          Pulsar.start_consumer(
+            topic,
+            subscription,
+            OffBroadway.Pulsar.Consumer,
+            topic_opts
+          )
+
+        group
+      end)
 
     # Extract flow control configuration (matches pulsar-elixir naming)
     flow_initial =
@@ -208,14 +245,19 @@ defmodule OffBroadway.Pulsar.Producer do
     end
 
     state = %{
-      consumer_group: consumer_group,
-      consumer_pid: nil,
+      consumer_groups: consumer_groups,
+      # Populated via :consumer_ready as each consumer starts.
+      # Keyed by topic (stable string) rather than consumer PID so that
+      # consumer restarts simply overwrite the entry without leaving stale PIDs.
+      # Maps topic => {consumer_pid, outstanding_permits}.
+      consumers: %{},
       demand: 0,
+      # Buffer entries are {%Pulsar.Message{}, consumer_pid, topic} triples:
+      # consumer_pid routes ACKs/NACKs, topic routes flow-permit accounting.
       buffer: [],
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
-      flow_refill: flow_refill,
-      outstanding_permits: 0
+      flow_refill: flow_refill
     }
 
     {:producer, state}
@@ -231,32 +273,33 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   @impl GenStage
-  def handle_info({:consumer_ready, consumer_pid}, state) do
-    Logger.debug("Consumer #{inspect(consumer_pid)} is ready, sending initial flow of #{state.flow_initial} permits")
+  def handle_info({:consumer_ready, consumer_pid, topic}, state) do
+    Logger.debug(
+      "Consumer #{inspect(consumer_pid)} is ready for topic #{topic}, sending initial flow of #{state.flow_initial} permits"
+    )
 
     case Pulsar.Consumer.send_flow(consumer_pid, state.flow_initial) do
       :ok ->
         Logger.debug("Sent initial flow of #{state.flow_initial} permits to consumer #{inspect(consumer_pid)}")
 
-        # Reset permits to initial flow (handles both first start and restart)
-        {:noreply, [], %{state | consumer_pid: consumer_pid, outstanding_permits: state.flow_initial}}
+        # Keying by topic means a restarted consumer simply overwrites the old
+        # entry. The stale PID is discarded automatically — no leak.
+        consumers = Map.put(state.consumers, topic, {consumer_pid, state.flow_initial})
+        {:noreply, [], %{state | consumers: consumers}}
 
       {:error, reason} ->
         Logger.error("Failed to send initial flow to consumer #{inspect(consumer_pid)}: #{inspect(reason)}")
 
         # Don't crash producer, consumer will retry or supervisor will handle it
-        {:noreply, [], %{state | consumer_pid: consumer_pid}}
+        {:noreply, [], state}
     end
   end
 
-  def handle_info({:pulsar_message, message_info}, state) do
-    # Add message to buffer
-    # Append to maintain FIFO order (oldest messages at head)
-    new_buffer = state.buffer ++ [message_info]
+  def handle_info({:pulsar_message, message_info, consumer_pid, topic}, state) do
+    # consumer_pid routes ACK/NACK; topic routes flow-permit accounting.
+    new_buffer = state.buffer ++ [{message_info, consumer_pid, topic}]
     Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
 
-    # If there's pending demand, dispatch immediately
-    # This ensures messages flow when Broadway is waiting
     dispatch_messages(%{state | buffer: new_buffer})
   end
 
@@ -268,22 +311,26 @@ defmodule OffBroadway.Pulsar.Producer do
     {:noreply, [], %{state | demand: demand}}
   end
 
-  defp dispatch_messages(%{buffer: buffer, demand: demand, consumer_pid: consumer_pid} = state) do
+  defp dispatch_messages(%{buffer: buffer, demand: demand} = state) do
     {to_dispatch, to_drop, remaining} = pull_messages(buffer, demand)
 
-    # Use tracked consumer PID for acknowledger
-    # If consumer_pid is nil, messages will fail on ACK, but we let them through
-    broadway_messages = Enum.map(to_dispatch, &wrap_message(&1, consumer_pid))
+    broadway_messages = Enum.map(to_dispatch, fn {msg, pid, _topic} -> wrap_message(msg, pid) end)
     Logger.debug("Dispatching #{length(to_dispatch)} messages, #{length(remaining)} remaining in buffer")
 
     new_demand = demand - length(to_dispatch)
 
-    # Decrement outstanding permits for dispatched messages
-    dispatched_count = demand(to_dispatch, to_drop)
-    new_outstanding = max(state.outstanding_permits - dispatched_count, 0)
+    # Decrement outstanding permits per topic based on how many broker
+    # messages each topic contributed to this dispatch batch.
+    consumed = permits_consumed(to_dispatch ++ to_drop)
 
-    # Check if we need to refill after dispatching
-    state = %{state | buffer: remaining, demand: new_demand, outstanding_permits: new_outstanding}
+    consumers =
+      Enum.reduce(consumed, state.consumers, fn {topic, count}, acc ->
+        Map.update(acc, topic, {nil, 0}, fn {pid, outstanding} ->
+          {pid, max(outstanding - count, 0)}
+        end)
+      end)
+
+    state = %{state | buffer: remaining, demand: new_demand, consumers: consumers}
     state = maybe_refill_flow(state)
 
     {:noreply, broadway_messages, state}
@@ -291,16 +338,16 @@ defmodule OffBroadway.Pulsar.Producer do
 
   defp pull_messages(buffer, demand) do
     {to_dispatch, to_drop, remaining, _count} =
-      Enum.reduce(buffer, {[], [], [], 0}, fn msg, {dispatch, drop, rest, count} ->
+      Enum.reduce(buffer, {[], [], [], 0}, fn {msg, _pid, _topic} = entry, {dispatch, drop, rest, count} ->
         cond do
           match?(%{chunked: true, complete: false}, msg) ->
-            {dispatch, [msg | drop], rest, count}
+            {dispatch, [entry | drop], rest, count}
 
           count < demand ->
-            {[msg | dispatch], drop, rest, count + 1}
+            {[entry | dispatch], drop, rest, count + 1}
 
           true ->
-            {dispatch, drop, [msg | rest], count}
+            {dispatch, drop, [entry | rest], count}
         end
       end)
 
@@ -311,8 +358,15 @@ defmodule OffBroadway.Pulsar.Producer do
     }
   end
 
-  defp demand(dispatched, dropped) do
-    Enum.sum(Enum.map(dispatched ++ dropped, &Pulsar.Message.num_broker_messages/1))
+  # Returns a map of topic => broker_message_count for the given buffer entries,
+  # used to decrement each topic's consumer outstanding permits.
+  defp permits_consumed(entries) do
+    entries
+    |> Enum.group_by(fn {_msg, _pid, topic} -> topic end)
+    |> Map.new(fn {topic, items} ->
+      count = Enum.sum(Enum.map(items, fn {msg, _, _} -> Pulsar.Message.num_broker_messages(msg) end))
+      {topic, count}
+    end)
   end
 
   defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer) do
@@ -329,30 +383,36 @@ defmodule OffBroadway.Pulsar.Producer do
     }
   end
 
-  # Refills permit window when it drops below threshold
+  # Checks each topic's consumer independently and refills its permit window
+  # if it has dropped below the threshold.
   defp maybe_refill_flow(state) do
-    outstanding = state.outstanding_permits
-    threshold = state.flow_threshold
-    refill_amount = state.flow_refill
+    consumers =
+      Enum.reduce(state.consumers, state.consumers, fn {topic, {pid, outstanding}}, acc ->
+        if outstanding <= state.flow_threshold do
+          refill_consumer(acc, topic, pid, outstanding, state.flow_refill)
+        else
+          acc
+        end
+      end)
 
-    if outstanding <= threshold and state.consumer_pid != nil do
-      # Use tracked consumer PID
-      case Pulsar.Consumer.send_flow(state.consumer_pid, refill_amount) do
-        :ok ->
-          new_outstanding = outstanding + refill_amount
+    %{state | consumers: consumers}
+  end
 
-          Logger.debug(
-            "Refilled flow window: #{refill_amount} permits (outstanding: #{outstanding} → #{new_outstanding})"
-          )
+  defp refill_consumer(consumers, topic, pid, outstanding, refill_amount) do
+    case Pulsar.Consumer.send_flow(pid, refill_amount) do
+      :ok ->
+        new_outstanding = outstanding + refill_amount
 
-          %{state | outstanding_permits: new_outstanding}
+        Logger.debug(
+          "Refilled flow window for #{topic}: #{refill_amount} permits " <>
+            "(outstanding: #{outstanding} → #{new_outstanding})"
+        )
 
-        {:error, reason} ->
-          Logger.error("Failed to refill flow window: #{inspect(reason)}")
-          state
-      end
-    else
-      state
+        Map.put(consumers, topic, {pid, new_outstanding})
+
+      {:error, reason} ->
+        Logger.error("Failed to refill flow window for #{topic}: #{inspect(reason)}")
+        consumers
     end
   end
 

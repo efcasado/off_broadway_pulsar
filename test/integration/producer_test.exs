@@ -7,9 +7,18 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   @moduletag :integration
   @client :producer_test_client
   @topic "persistent://public/default/broadway-integration-test"
+  @topic_a "persistent://public/default/broadway-multi-topic-a"
+  @topic_b "persistent://public/default/broadway-multi-topic-b"
   @message_count 100
+  @multi_topic_message_count 20
 
   setup_all do
+    alias OffBroadwayPulsar.Test.Support.System
+
+    :ok = System.create_topic(@topic)
+    :ok = System.create_topic(@topic_a)
+    :ok = System.create_topic(@topic_b)
+
     {:ok, _client_pid} =
       Pulsar.Client.start_link(
         name: @client,
@@ -32,6 +41,19 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         )
     end
 
+    # Produce messages to the two multi-topic test topics.
+    # Each message payload encodes its source topic for assertion purposes.
+    {:ok, producer_a} =
+      Pulsar.Producer.start_link(@topic_a, client: @client, name: :test_producer_a)
+
+    {:ok, producer_b} =
+      Pulsar.Producer.start_link(@topic_b, client: @client, name: :test_producer_b)
+
+    for i <- 1..@multi_topic_message_count do
+      {:ok, _} = Pulsar.Producer.send_message(producer_a, "topic-a:#{i}")
+      {:ok, _} = Pulsar.Producer.send_message(producer_b, "topic-b:#{i}")
+    end
+
     on_exit(fn ->
       Pulsar.Client.stop(@client)
     end)
@@ -47,8 +69,8 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         subscription: "concurrency-sub",
         client: @client,
         producer_concurrency: 3,
-        flow_initial: 10,
-        flow_threshold: 5,
+        flow_initial: 5,
+        flow_threshold: 2,
         flow_refill: 5
       )
 
@@ -71,7 +93,10 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         topic: @topic,
         subscription: "app-managed-sub",
         client: @client,
-        name: :app_managed_pipeline
+        name: :app_managed_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5
       )
 
     assert_receive {:message_handled, %Broadway.Message{}, _processor}, 10_000
@@ -84,7 +109,10 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         topic: @topic,
         subscription: "producer-managed-sub",
         host: "pulsar://localhost:6650",
-        name: :producer_managed_pipeline
+        name: :producer_managed_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5
       )
 
     assert_receive {:message_handled, %Broadway.Message{}, _processor}, 10_000
@@ -99,6 +127,9 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         client: @client,
         handler: :nack,
         name: :nack_test_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5,
         consumer_opts: [
           initial_position: :earliest,
           redelivery_interval: 100
@@ -127,6 +158,9 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         client: @client,
         handler: :nack,
         name: :dlq_test_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5,
         consumer_opts: [
           initial_position: :earliest,
           redelivery_interval: 500,
@@ -161,7 +195,10 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         topic: @topic,
         subscription: "metadata-sub",
         client: @client,
-        name: :metadata_pipeline
+        name: :metadata_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5
       )
 
     assert_receive {:message_handled, %Broadway.Message{metadata: metadata}, _processor}, 10_000
@@ -173,6 +210,41 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     assert Enum.any?(pulsar_metadata.properties, fn prop -> prop.key == "index" end)
   end
 
+  test "messages from multiple topics are all received and acknowledged" do
+    total = @multi_topic_message_count * 2
+
+    # flow_initial (5) < @multi_topic_message_count (20) forces each consumer
+    # to go through multiple refill cycles, exercising the per-consumer flow
+    # tracking in maybe_refill_flow/refill_consumer.
+    {:ok, _broadway} =
+      DummyPipeline.start_link(
+        test_pid: self(),
+        topics: [@topic_a, @topic_b],
+        subscription: "multi-topic-sub",
+        client: @client,
+        name: :multi_topic_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5,
+        consumer_opts: [initial_position: :earliest]
+      )
+
+    payloads =
+      for _ <- 1..total do
+        assert_receive {:message_handled, %Broadway.Message{} = msg, _processor}, 10_000
+        msg.data
+      end
+
+    from_a = Enum.count(payloads, &String.starts_with?(&1, "topic-a:"))
+    from_b = Enum.count(payloads, &String.starts_with?(&1, "topic-b:"))
+
+    assert from_a == @multi_topic_message_count,
+           "Expected #{@multi_topic_message_count} messages from topic-a, got #{from_a}"
+
+    assert from_b == @multi_topic_message_count,
+           "Expected #{@multi_topic_message_count} messages from topic-b, got #{from_b}"
+  end
+
   test "pipeline graceful shutdown" do
     {:ok, broadway} =
       DummyPipeline.start_link(
@@ -180,7 +252,10 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         topic: @topic,
         subscription: "shutdown-sub",
         client: @client,
-        name: :shutdown_test_pipeline
+        name: :shutdown_test_pipeline,
+        flow_initial: 5,
+        flow_threshold: 2,
+        flow_refill: 5
       )
 
     assert_receive {:message_handled, %Broadway.Message{}, _processor}, 10_000

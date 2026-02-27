@@ -4,7 +4,6 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
 
   def start_link(opts) do
     test_pid = Keyword.fetch!(opts, :test_pid)
-    topic = Keyword.get(opts, :topic, "persistent://public/default/test-topic")
     subscription = Keyword.get(opts, :subscription, "test-subscription")
     consumer_opts = Keyword.get(opts, :consumer_opts, initial_position: :earliest)
     handler = Keyword.get(opts, :handler, :default)
@@ -12,31 +11,25 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
     producer_concurrency = Keyword.get(opts, :producer_concurrency, 1)
     processor_concurrency = Keyword.get(opts, :processor_concurrency, 1)
 
+    # Support both :topic (single, backwards-compatible) and :topics (list).
+    topic_config =
+      if Keyword.has_key?(opts, :topics) do
+        [topics: Keyword.fetch!(opts, :topics)]
+      else
+        [topic: Keyword.get(opts, :topic, "persistent://public/default/test-topic")]
+      end
+
     producer_config =
       case {Keyword.get(opts, :host), Keyword.get(opts, :client)} do
         {nil, nil} ->
-          [
-            host: "pulsar://localhost:6650",
-            topic: topic,
-            subscription: subscription,
-            consumer_opts: consumer_opts
-          ]
+          [host: "pulsar://localhost:6650", subscription: subscription, consumer_opts: consumer_opts] ++
+            topic_config
 
         {host, _} when host != nil ->
-          [
-            host: host,
-            topic: topic,
-            subscription: subscription,
-            consumer_opts: consumer_opts
-          ]
+          [host: host, subscription: subscription, consumer_opts: consumer_opts] ++ topic_config
 
         {nil, client} ->
-          [
-            client: client,
-            topic: topic,
-            subscription: subscription,
-            consumer_opts: consumer_opts
-          ]
+          [client: client, subscription: subscription, consumer_opts: consumer_opts] ++ topic_config
       end
 
     producer_config =

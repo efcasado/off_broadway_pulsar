@@ -33,7 +33,7 @@ defmodule MyApp.PulsarPipeline do
       producer: [
         module: {OffBroadway.Pulsar.Producer,
           host: "pulsar://localhost:6650",
-          topic: "persistent://public/default/my-topic",
+          topics: [persistent://public/default/my-topic"],
           subscription: "my-subscription"
         },
         concurrency: 1
