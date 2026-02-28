@@ -1,3 +1,5 @@
+## [1.3.1](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.0...v1.3.1) (2026-02-28)
+
 ## [1.3.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.2.11...v1.3.0) (2026-02-27)
 
 ### Features
