@@ -1,3 +1,9 @@
+## [1.3.6](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.5...v1.3.6) (2026-05-08)
+
+### Bug Fixes
+
+* inherit default callbacks for pulsar consumer ([#48](https://github.com/efcasado/off_broadway_pulsar/issues/48)) ([1b1e4fb](https://github.com/efcasado/off_broadway_pulsar/commit/1b1e4fbca37d789a9e525b105792e5177a72d767))
+
 ## [1.3.5](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.4...v1.3.5) (2026-03-22)
 
 ## [1.3.4](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.3...v1.3.4) (2026-03-10)
