@@ -1,6 +1,6 @@
 defmodule OffBroadway.Pulsar.Consumer do
   @moduledoc false
-  @behaviour Pulsar.Consumer.Callback
+  use Pulsar.Consumer.Callback
 
   @impl true
   def init([broadway_producer, topic]) do
