@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.4.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.11...v1.4.0) (2026-06-06)
+
+
+### Features
+
+* **pulsar:** partition auto-discovery ([54fb1b3](https://github.com/efcasado/off_broadway_pulsar/commit/54fb1b37036f0b37c07f92a7bf0cc0efacd76373))
+
+
+### Bug Fixes
+
+* permit tracking is off for partitioned topics ([9b297ad](https://github.com/efcasado/off_broadway_pulsar/commit/9b297adcae43bcceb9d567104f067125e465cd31))
+
+
+### Dependencies
+
+* bump erlang and elixir versions to 29 and 1.20 ([#63](https://github.com/efcasado/off_broadway_pulsar/issues/63)) ([ca4ad2c](https://github.com/efcasado/off_broadway_pulsar/commit/ca4ad2cd514ecf81a28e6baf25db745e9968b427))
+* bump pulsar from 2.8.17 to 2.9.0 ([070859f](https://github.com/efcasado/off_broadway_pulsar/commit/070859fdbaa893efb885e4b7ce7220ffc608d40d))
+* **ci:** bump actions/cache from 4 to 5 ([#61](https://github.com/efcasado/off_broadway_pulsar/issues/61)) ([7ca760f](https://github.com/efcasado/off_broadway_pulsar/commit/7ca760f7b1e35c4ec327f19f85fc73087cb8c84f))
+* **ci:** bump actions/checkout from 4 to 6 ([#58](https://github.com/efcasado/off_broadway_pulsar/issues/58)) ([ff23dd2](https://github.com/efcasado/off_broadway_pulsar/commit/ff23dd20e4e270d6b86cac3739d89a2e5ef9bb9d))
+* **ci:** bump dorny/test-reporter from 2.2.0 to 3.0.0 ([#59](https://github.com/efcasado/off_broadway_pulsar/issues/59)) ([fa55abd](https://github.com/efcasado/off_broadway_pulsar/commit/fa55abd4a42b377cf27a076ceec57df631221327))
+* **ci:** bump jdx/mise-action from 2 to 4 ([#62](https://github.com/efcasado/off_broadway_pulsar/issues/62)) ([63eb14d](https://github.com/efcasado/off_broadway_pulsar/commit/63eb14d852d655e7d7617d090a49fce5db5e1b85))
+
+
+### Continuous Integration
+
+* bump version in readme on new release ([#56](https://github.com/efcasado/off_broadway_pulsar/issues/56)) ([3e98430](https://github.com/efcasado/off_broadway_pulsar/commit/3e9843077e0944de0e453d04cf3b509f5dfa0047))
+* configure dependabot to bump gha dependencies ([#57](https://github.com/efcasado/off_broadway_pulsar/issues/57)) ([c44afb7](https://github.com/efcasado/off_broadway_pulsar/commit/c44afb7f3628c4f10e5c086ce1b30325d6168e9e))
+* migrate releases to release-please ([#54](https://github.com/efcasado/off_broadway_pulsar/issues/54)) ([8b28f9a](https://github.com/efcasado/off_broadway_pulsar/commit/8b28f9a8b146f5f9cfce96eaafa76364db5ae92c))
+
 ## [1.3.11](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.10...v1.3.11) (2026-06-05)
 
 ## [1.3.10](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.9...v1.3.10) (2026-05-23)
