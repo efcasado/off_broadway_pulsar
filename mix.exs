@@ -11,12 +11,6 @@ defmodule OffBroadwayPulsar.MixProject do
       deps: deps(),
       consolidate_protocols: Mix.env() != :test,
       test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: [
-        coveralls: :test,
-        "coveralls.detail": :test,
-        "coveralls.post": :test,
-        "coveralls.html": :test
-      ],
       dialyzer: [
         plt_add_apps: [:pulsar]
       ],
@@ -26,6 +20,17 @@ defmodule OffBroadwayPulsar.MixProject do
       docs: [
         main: "OffBroadway.Pulsar.Producer",
         extras: ["README.md"]
+      ]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.post": :test,
+        "coveralls.html": :test
       ]
     ]
   end
