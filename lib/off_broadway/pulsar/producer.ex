@@ -203,8 +203,10 @@ defmodule OffBroadway.Pulsar.Producer do
 
     # Start one consumer group per topic. Each group gets a unique name to
     # support both multi-topic and producer concurrency > 1.
-    # init_args includes the topic so the consumer can send it back as a
-    # stable map key, replacing stale PIDs on restart without accumulation.
+    # consumer_registry is passed so each partition consumer can look up its
+    # ConsumerGroup name and derive the partition topic as its stable map key.
+    consumer_registry = Pulsar.Client.consumer_registry(client)
+
     consumer_groups =
       Enum.map(topics, fn topic ->
         unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
@@ -212,7 +214,7 @@ defmodule OffBroadway.Pulsar.Producer do
         topic_opts =
           consumer_opts_base
           |> Keyword.put(:name, unique_name)
-          |> Keyword.put(:init_args, [self(), topic])
+          |> Keyword.put(:init_args, [self(), topic, consumer_registry])
 
         {:ok, group} =
           Pulsar.start_consumer(
