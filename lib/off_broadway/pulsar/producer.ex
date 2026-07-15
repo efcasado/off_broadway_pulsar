@@ -55,6 +55,8 @@ defmodule OffBroadway.Pulsar.Producer do
   @default_flow_threshold 50
   @default_flow_refill 50
 
+  @active_state_changed_event [:off_broadway_pulsar, :consumer, :active_state_changed]
+
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
@@ -72,6 +74,9 @@ defmodule OffBroadway.Pulsar.Producer do
     One consumer is started per topic. Providing a single topic via `:topic` is equivalent
     to `topics: [topic]` and is kept for backwards compatibility.
   - `:subscription` - The subscription name (required)
+  - `:active_state_listener` - An optional process destination that receives active/passive
+    state changes for Failover consumers. It accepts the same destinations as
+    `GenServer.server/0`. See "Failover Active State" below.
   - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
     - `:auth` - Authentication configuration
@@ -115,6 +120,32 @@ defmodule OffBroadway.Pulsar.Producer do
 
   When using `producer: [concurrency: N]` with N > 1, each producer maintains
   its own independent permit window.
+
+  ## Failover Active State
+
+  Consumers using a `:Failover` subscription report when Pulsar promotes them
+  to active or demotes them to passive. Every transition emits the Telemetry
+  event `[:off_broadway_pulsar, :consumer, :active_state_changed]` with the
+  following metadata:
+
+  - `:active_state` - Either `:active` or `:passive`
+  - `:topic` - The topic, or individual partition topic, whose state changed
+  - `:subscription` - The Pulsar subscription name
+  - `:consumer_pid` - The underlying Pulsar consumer process
+  - `:producer_pid` - This Broadway producer process
+
+  If `:active_state_listener` is configured, the same metadata is sent to it:
+
+      {:off_broadway_pulsar, :consumer_active_state_changed, metadata}
+
+  The listener must already be running when a transition occurs. Listener work
+  runs outside the consumer and producer processes, so it cannot block message
+  consumption. If the listener is unavailable, the transition is still emitted
+  through Telemetry.
+
+  Active state belongs to an individual topic or partition, not the Broadway
+  pipeline as a whole. A demotion also does not mean that messages already
+  delivered to Broadway have finished processing.
 
   ## Usage Patterns
 
@@ -176,6 +207,11 @@ defmodule OffBroadway.Pulsar.Producer do
 
     subscription = Keyword.fetch!(opts, :subscription)
     client = Keyword.get(opts, :client, :default)
+
+    active_state_listener =
+      opts
+      |> Keyword.get(:active_state_listener)
+      |> validate_active_state_listener!()
 
     # Only start Pulsar if host is provided (producer-managed connection)
     # Otherwise, assume Pulsar is already started globally (application-managed connection)
@@ -260,6 +296,8 @@ defmodule OffBroadway.Pulsar.Producer do
       # Buffer entries are {%Pulsar.Message{}, consumer_pid, topic} triples:
       # consumer_pid routes ACKs/NACKs, topic routes flow-permit accounting.
       buffer: [],
+      subscription: subscription,
+      active_state_listener: active_state_listener,
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
       flow_refill: flow_refill
@@ -306,6 +344,27 @@ defmodule OffBroadway.Pulsar.Producer do
     Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
 
     dispatch_messages(%{state | buffer: new_buffer})
+  end
+
+  def handle_info({:consumer_active_state_changed, active_state, consumer_pid, topic}, state)
+      when active_state in [:active, :passive] do
+    metadata = %{
+      active_state: active_state,
+      topic: topic,
+      subscription: state.subscription,
+      consumer_pid: consumer_pid,
+      producer_pid: self()
+    }
+
+    :telemetry.execute(
+      @active_state_changed_event,
+      %{system_time: System.system_time()},
+      metadata
+    )
+
+    notify_active_state_listener(state.active_state_listener, metadata)
+
+    {:noreply, [], state}
   end
 
   defp dispatch_messages(%{demand: 0} = state) do
@@ -427,5 +486,30 @@ defmodule OffBroadway.Pulsar.Producer do
   defp validate_positive_integer!(value, name) do
     raise ArgumentError,
           "expected :#{name} to be a positive integer, got: #{inspect(value)}"
+  end
+
+  defp validate_active_state_listener!(nil), do: nil
+
+  defp validate_active_state_listener!(listener) when is_pid(listener) or is_atom(listener), do: listener
+
+  defp validate_active_state_listener!({:global, _name} = listener), do: listener
+
+  defp validate_active_state_listener!({:via, module, _name} = listener) when is_atom(module), do: listener
+
+  defp validate_active_state_listener!(listener) do
+    raise ArgumentError,
+          "expected :active_state_listener to be a process destination, got: #{inspect(listener)}"
+  end
+
+  defp notify_active_state_listener(nil, _metadata), do: :ok
+
+  defp notify_active_state_listener(listener, metadata) do
+    case GenServer.whereis(listener) do
+      pid when is_pid(pid) ->
+        send(pid, {:off_broadway_pulsar, :consumer_active_state_changed, metadata})
+
+      nil ->
+        Logger.warning("Active state listener #{inspect(listener)} is not available")
+    end
   end
 end

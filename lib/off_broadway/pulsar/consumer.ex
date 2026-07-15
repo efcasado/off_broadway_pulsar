@@ -28,6 +28,26 @@ defmodule OffBroadway.Pulsar.Consumer do
     {:noreply, state}
   end
 
+  @impl true
+  def became_active(state) do
+    send(
+      state.broadway_producer,
+      {:consumer_active_state_changed, :active, self(), state.topic}
+    )
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def became_passive(state) do
+    send(
+      state.broadway_producer,
+      {:consumer_active_state_changed, :passive, self(), state.topic}
+    )
+
+    {:noreply, state}
+  end
+
   # Finds the ConsumerGroup PID among this consumer's process links, looks up
   # its registered name in the consumer registry, and returns the partition topic
   # if the name carries a "-partition-N" suffix; otherwise returns base_topic.

@@ -32,4 +32,22 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
       assert Consumer.handle_info(:anything, %{}) == {:noreply, %{}}
     end
   end
+
+  describe "Failover active state" do
+    test "forwards active transitions to the Broadway producer" do
+      state = %{broadway_producer: self(), topic: "my-topic"}
+
+      assert Consumer.became_active(state) == {:noreply, state}
+      assert_receive {:consumer_active_state_changed, :active, consumer_pid, "my-topic"}
+      assert consumer_pid == self()
+    end
+
+    test "forwards passive transitions to the Broadway producer" do
+      state = %{broadway_producer: self(), topic: "my-topic"}
+
+      assert Consumer.became_passive(state) == {:noreply, state}
+      assert_receive {:consumer_active_state_changed, :passive, consumer_pid, "my-topic"}
+      assert consumer_pid == self()
+    end
+  end
 end

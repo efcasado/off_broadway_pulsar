@@ -76,3 +76,45 @@ producer: [
   concurrency: 1
 ]
 ```
+
+## Failover active state
+
+For `:Failover` subscriptions, `off_broadway_pulsar` reports when an underlying
+Pulsar consumer becomes active or passive. Configure an optional listener using
+a PID, registered name, or another `GenServer.server()` destination:
+
+```elixir
+producer: [
+  module: {OffBroadway.Pulsar.Producer,
+    topic: "persistent://public/default/my-topic",
+    subscription: "my-subscription",
+    consumer_opts: [subscription_type: :Failover],
+    active_state_listener: MyApp.PulsarOwnershipListener
+  },
+  concurrency: 1
+]
+```
+
+The listener receives an ordinary process message and handles the work outside
+the Pulsar consumer and Broadway producer:
+
+```elixir
+def handle_info(
+      {:off_broadway_pulsar, :consumer_active_state_changed, metadata},
+      state
+    ) do
+  # metadata.active_state is :active or :passive
+  {:noreply, state}
+end
+```
+
+Every transition also emits
+`[:off_broadway_pulsar, :consumer, :active_state_changed]` through Telemetry.
+Its measurements contain `:system_time`, and its metadata contains
+`:active_state`, `:topic`, `:subscription`, `:consumer_pid`, and `:producer_pid`.
+
+Active state belongs to an individual topic or partition. It is not a general
+distributed lock or a guarantee that messages already delivered to Broadway
+have finished processing. Partitioned topics, multiple topics, and producer
+concurrency greater than one can give a pipeline multiple simultaneous consumer
+states.

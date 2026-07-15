@@ -263,4 +263,54 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     assert :ok = Broadway.stop(broadway)
     refute Process.alive?(broadway)
   end
+
+  test "Failover consumers report ownership changes and notify the standby on promotion" do
+    subscription = "failover-ownership-sub"
+
+    {:ok, active_pipeline} =
+      DummyPipeline.start_link(
+        test_pid: self(),
+        topic: @topic,
+        subscription: subscription,
+        client: @client,
+        name: :failover_active_pipeline,
+        active_state_listener: self(),
+        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+      )
+
+    assert_receive {:off_broadway_pulsar, :consumer_active_state_changed,
+                    %{active_state: :active, subscription: ^subscription}},
+                   10_000
+
+    {:ok, standby_pipeline} =
+      DummyPipeline.start_link(
+        test_pid: self(),
+        topic: @topic,
+        subscription: subscription,
+        client: @client,
+        name: :failover_standby_pipeline,
+        active_state_listener: self(),
+        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+      )
+
+    assert_receive {:off_broadway_pulsar, :consumer_active_state_changed,
+                    %{
+                      active_state: :passive,
+                      subscription: ^subscription,
+                      consumer_pid: standby_consumer
+                    }},
+                   10_000
+
+    assert :ok = Broadway.stop(active_pipeline)
+
+    assert_receive {:off_broadway_pulsar, :consumer_active_state_changed,
+                    %{
+                      active_state: :active,
+                      subscription: ^subscription,
+                      consumer_pid: ^standby_consumer
+                    }},
+                   10_000
+
+    assert :ok = Broadway.stop(standby_pipeline)
+  end
 end
