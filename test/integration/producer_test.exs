@@ -266,8 +266,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
   test "Failover consumers report active state through the callback" do
     subscription = "failover-ownership-sub"
-    test_pid = self()
-    callback = fn metadata -> send(test_pid, {:active_state_callback, metadata}) end
+    callback = {__MODULE__, :notify_active_state, [self()]}
 
     {:ok, pipeline} =
       DummyPipeline.start_link(
@@ -291,5 +290,9 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
     assert is_pid(consumer_pid)
     assert :ok = Broadway.stop(pipeline)
+  end
+
+  def notify_active_state(metadata, test_pid) do
+    send(test_pid, {:active_state_callback, metadata})
   end
 end

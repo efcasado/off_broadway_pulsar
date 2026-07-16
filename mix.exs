@@ -48,7 +48,6 @@ defmodule OffBroadwayPulsar.MixProject do
     [
       {:broadway, "~> 1.2"},
       {:pulsar, "~> 2.11.0", hex: :pulsar_elixir},
-      {:telemetry, "~> 1.2"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40.0", only: :dev, runtime: false},

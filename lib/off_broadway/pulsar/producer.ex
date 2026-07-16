@@ -55,8 +55,6 @@ defmodule OffBroadway.Pulsar.Producer do
   @default_flow_threshold 50
   @default_flow_refill 50
 
-  @active_state_changed_event [:off_broadway_pulsar, :consumer, :active_state_changed]
-
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
@@ -74,7 +72,7 @@ defmodule OffBroadway.Pulsar.Producer do
     One consumer is started per topic. Providing a single topic via `:topic` is equivalent
     to `topics: [topic]` and is kept for backwards compatibility.
   - `:subscription` - The subscription name (required)
-  - `:active_state_callback` - An optional function of arity one that receives
+  - `:active_state_callback` - An optional `{module, function, extra_args}` tuple that receives
     active/passive state changes for Failover consumers. See "Failover Active State" below.
   - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
@@ -123,14 +121,17 @@ defmodule OffBroadway.Pulsar.Producer do
   ## Failover Active State
 
   Consumers using a `:Failover` subscription report broker-provided active and
-  passive state changes. Every report emits the Telemetry event
-  `[:off_broadway_pulsar, :consumer, :active_state_changed]` and, when
-  configured, invokes `:active_state_callback` with the same metadata:
+  passive state changes through the optional `:active_state_callback`. Configure
+  the callback as a `{module, function, extra_args}` tuple. It is invoked as
+  `apply(module, function, [metadata | extra_args])`, where `metadata` contains:
 
   - `:active_state` - Either `:active` or `:passive`
   - `:topic` - The topic, or individual partition topic, whose state changed
   - `:subscription` - The Pulsar subscription name
   - `:consumer_pid` - The underlying Pulsar consumer process
+
+  The module must be loadable and the function must be exported with arity
+  `length(extra_args) + 1`; this is validated when the producer initializes.
 
   The callback runs synchronously in the Broadway producer, should return
   promptly, and propagates failures to the producer. Reports are best-effort
@@ -351,15 +352,7 @@ defmodule OffBroadway.Pulsar.Producer do
       consumer_pid: consumer_pid
     }
 
-    :telemetry.execute(
-      @active_state_changed_event,
-      %{system_time: System.system_time()},
-      metadata
-    )
-
-    if state.active_state_callback do
-      state.active_state_callback.(metadata)
-    end
+    invoke_active_state_callback(state.active_state_callback, metadata)
 
     {:noreply, [], state}
   end
@@ -486,10 +479,28 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   defp validate_active_state_callback!(nil), do: nil
-  defp validate_active_state_callback!(callback) when is_function(callback, 1), do: callback
+
+  defp validate_active_state_callback!({module, function, extra_args} = callback)
+       when is_atom(module) and is_atom(function) and is_list(extra_args) do
+    arity = length(extra_args) + 1
+
+    if !(Code.ensure_loaded?(module) and function_exported?(module, function, arity)) do
+      raise ArgumentError,
+            "expected :active_state_callback #{inspect(module)}.#{function}/#{arity} to be exported"
+    end
+
+    callback
+  end
 
   defp validate_active_state_callback!(callback) do
     raise ArgumentError,
-          "expected :active_state_callback to be a function of arity one, got: #{inspect(callback)}"
+          "expected :active_state_callback to be a {module, function, extra_args} tuple, " <>
+            "got: #{inspect(callback)}"
+  end
+
+  defp invoke_active_state_callback(nil, _metadata), do: :ok
+
+  defp invoke_active_state_callback({module, function, extra_args}, metadata) do
+    apply(module, function, [metadata | extra_args])
   end
 end

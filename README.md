@@ -80,9 +80,8 @@ producer: [
 ## Failover active state
 
 For `:Failover` subscriptions, `off_broadway_pulsar` reports when an underlying
-Pulsar consumer becomes active or passive. Every report emits
-`[:off_broadway_pulsar, :consumer, :active_state_changed]` through Telemetry.
-An optional callback receives the same metadata:
+Pulsar consumer becomes active or passive through an optional callback. Configure
+the callback as a `{module, function, extra_args}` tuple:
 
 ```elixir
 producer: [
@@ -90,13 +89,16 @@ producer: [
     topic: "persistent://public/default/my-topic",
     subscription: "my-subscription",
     consumer_opts: [subscription_type: :Failover],
-    active_state_callback: fn metadata ->
-      GenServer.cast(MyApp.FailoverObserver, {:active_state, metadata})
-    end
+    active_state_callback: {MyApp.FailoverObserver, :handle_active_state, []}
   },
   concurrency: 1
 ]
 ```
+
+The callback is invoked as
+`MyApp.FailoverObserver.handle_active_state(metadata)`. Any configured extra
+arguments are passed after `metadata`. The callback module and function are
+validated when the producer initializes.
 
 Reports may repeat, and consumer termination does not guarantee a final
 `:passive` report. Handle them idempotently and monitor `metadata.consumer_pid`
@@ -104,4 +106,4 @@ when local work must stop with the consumer. This signal is per topic or
 partition; it is not a distributed lock or fencing mechanism.
 
 See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
-for the complete event contract.
+for the complete callback contract.
