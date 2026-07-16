@@ -133,8 +133,8 @@ defmodule OffBroadway.Pulsar.Producer do
   The module must be loadable and the function must be exported with arity
   `length(extra_args) + 1`; this is validated when the producer initializes.
 
-  The callback runs synchronously in the Broadway producer, should return
-  promptly, and propagates failures to the producer. Reports are best-effort
+  The callback runs synchronously in the underlying Pulsar consumer, should return
+  promptly, and propagates failures to that consumer. Reports are best-effort
   state observations: the same state may be reported more than once, and
   consumer termination does not guarantee a final `:passive` report. Treat
   reports idempotently and monitor `:consumer_pid` if local work must stop when
@@ -247,7 +247,10 @@ defmodule OffBroadway.Pulsar.Producer do
         topic_opts =
           consumer_opts_base
           |> Keyword.put(:name, unique_name)
-          |> Keyword.put(:init_args, [self(), topic, consumer_registry])
+          |> Keyword.put(
+            :init_args,
+            [self(), topic, consumer_registry, subscription, active_state_callback]
+          )
 
         {:ok, group} =
           Pulsar.start_consumer(
@@ -293,8 +296,6 @@ defmodule OffBroadway.Pulsar.Producer do
       # Buffer entries are {%Pulsar.Message{}, consumer_pid, topic} triples:
       # consumer_pid routes ACKs/NACKs, topic routes flow-permit accounting.
       buffer: [],
-      subscription: subscription,
-      active_state_callback: active_state_callback,
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
       flow_refill: flow_refill
@@ -341,20 +342,6 @@ defmodule OffBroadway.Pulsar.Producer do
     Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
 
     dispatch_messages(%{state | buffer: new_buffer})
-  end
-
-  def handle_info({:consumer_active_state_changed, active_state, consumer_pid, topic}, state)
-      when active_state in [:active, :passive] do
-    metadata = %{
-      active_state: active_state,
-      topic: topic,
-      subscription: state.subscription,
-      consumer_pid: consumer_pid
-    }
-
-    invoke_active_state_callback(state.active_state_callback, metadata)
-
-    {:noreply, [], state}
   end
 
   defp dispatch_messages(%{demand: 0} = state) do
@@ -496,11 +483,5 @@ defmodule OffBroadway.Pulsar.Producer do
     raise ArgumentError,
           "expected :active_state_callback to be a {module, function, extra_args} tuple, " <>
             "got: #{inspect(callback)}"
-  end
-
-  defp invoke_active_state_callback(nil, _metadata), do: :ok
-
-  defp invoke_active_state_callback({module, function, extra_args}, metadata) do
-    apply(module, function, [metadata | extra_args])
   end
 end

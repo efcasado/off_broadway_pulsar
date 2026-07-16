@@ -34,20 +34,57 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
   end
 
   describe "Failover active state" do
-    test "forwards active transitions to the Broadway producer" do
-      state = %{broadway_producer: self(), topic: "my-topic"}
+    test "invokes the MFA callback for active transitions" do
+      state = active_state_callback_state()
 
       assert Consumer.became_active(state) == {:noreply, state}
-      assert_receive {:consumer_active_state_changed, :active, consumer_pid, "my-topic"}
+
+      assert_receive {:active_state_callback,
+                      %{
+                        active_state: :active,
+                        topic: "my-topic",
+                        subscription: "my-subscription",
+                        consumer_pid: consumer_pid
+                      }, :configured_argument}
+
       assert consumer_pid == self()
     end
 
-    test "forwards passive transitions to the Broadway producer" do
-      state = %{broadway_producer: self(), topic: "my-topic"}
+    test "invokes the MFA callback for passive transitions" do
+      state = active_state_callback_state()
 
       assert Consumer.became_passive(state) == {:noreply, state}
-      assert_receive {:consumer_active_state_changed, :passive, consumer_pid, "my-topic"}
+
+      assert_receive {:active_state_callback,
+                      %{
+                        active_state: :passive,
+                        topic: "my-topic",
+                        subscription: "my-subscription",
+                        consumer_pid: consumer_pid
+                      }, :configured_argument}
+
       assert consumer_pid == self()
     end
+
+    test "handles transitions when no callback is configured" do
+      state = %{active_state_callback_state() | active_state_callback: nil}
+
+      assert Consumer.became_active(state) == {:noreply, state}
+      assert Consumer.became_passive(state) == {:noreply, state}
+      refute_receive {:active_state_callback, _, _}
+    end
+  end
+
+  def notify_active_state(metadata, test_pid, configured_argument) do
+    send(test_pid, {:active_state_callback, metadata, configured_argument})
+  end
+
+  defp active_state_callback_state do
+    %{
+      broadway_producer: self(),
+      topic: "my-topic",
+      subscription: "my-subscription",
+      active_state_callback: {__MODULE__, :notify_active_state, [self(), :configured_argument]}
+    }
   end
 end
