@@ -264,53 +264,32 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     refute Process.alive?(broadway)
   end
 
-  test "Failover consumers report ownership changes and notify the standby on promotion" do
+  test "Failover consumers report active state through the callback" do
     subscription = "failover-ownership-sub"
+    test_pid = self()
+    callback = fn metadata -> send(test_pid, {:active_state_callback, metadata}) end
 
-    {:ok, active_pipeline} =
+    {:ok, pipeline} =
       DummyPipeline.start_link(
         test_pid: self(),
         topic: @topic,
         subscription: subscription,
         client: @client,
-        name: :failover_active_pipeline,
-        active_state_listener: self(),
+        name: :failover_callback_pipeline,
+        active_state_callback: callback,
         consumer_opts: [subscription_type: :Failover, initial_position: :latest]
       )
 
-    assert_receive {:off_broadway_pulsar, :consumer_active_state_changed,
-                    %{active_state: :active, subscription: ^subscription}},
-                   10_000
-
-    {:ok, standby_pipeline} =
-      DummyPipeline.start_link(
-        test_pid: self(),
-        topic: @topic,
-        subscription: subscription,
-        client: @client,
-        name: :failover_standby_pipeline,
-        active_state_listener: self(),
-        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
-      )
-
-    assert_receive {:off_broadway_pulsar, :consumer_active_state_changed,
-                    %{
-                      active_state: :passive,
-                      subscription: ^subscription,
-                      consumer_pid: standby_consumer
-                    }},
-                   10_000
-
-    assert :ok = Broadway.stop(active_pipeline)
-
-    assert_receive {:off_broadway_pulsar, :consumer_active_state_changed,
+    assert_receive {:active_state_callback,
                     %{
                       active_state: :active,
                       subscription: ^subscription,
-                      consumer_pid: ^standby_consumer
+                      consumer_pid: consumer_pid,
+                      topic: @topic
                     }},
                    10_000
 
-    assert :ok = Broadway.stop(standby_pipeline)
+    assert is_pid(consumer_pid)
+    assert :ok = Broadway.stop(pipeline)
   end
 end

@@ -80,8 +80,9 @@ producer: [
 ## Failover active state
 
 For `:Failover` subscriptions, `off_broadway_pulsar` reports when an underlying
-Pulsar consumer becomes active or passive. Configure an optional listener using
-a PID, registered name, or another `GenServer.server()` destination:
+Pulsar consumer becomes active or passive. Every report emits
+`[:off_broadway_pulsar, :consumer, :active_state_changed]` through Telemetry.
+An optional callback receives the same metadata:
 
 ```elixir
 producer: [
@@ -89,32 +90,18 @@ producer: [
     topic: "persistent://public/default/my-topic",
     subscription: "my-subscription",
     consumer_opts: [subscription_type: :Failover],
-    active_state_listener: MyApp.PulsarOwnershipListener
+    active_state_callback: fn metadata ->
+      GenServer.cast(MyApp.FailoverObserver, {:active_state, metadata})
+    end
   },
   concurrency: 1
 ]
 ```
 
-The listener receives an ordinary process message and handles the work outside
-the Pulsar consumer and Broadway producer:
+Reports may repeat, and consumer termination does not guarantee a final
+`:passive` report. Handle them idempotently and monitor `metadata.consumer_pid`
+when local work must stop with the consumer. This signal is per topic or
+partition; it is not a distributed lock or fencing mechanism.
 
-```elixir
-def handle_info(
-      {:off_broadway_pulsar, :consumer_active_state_changed, metadata},
-      state
-    ) do
-  # metadata.active_state is :active or :passive
-  {:noreply, state}
-end
-```
-
-Every transition also emits
-`[:off_broadway_pulsar, :consumer, :active_state_changed]` through Telemetry.
-Its measurements contain `:system_time`, and its metadata contains
-`:active_state`, `:topic`, `:subscription`, `:consumer_pid`, and `:producer_pid`.
-
-Active state belongs to an individual topic or partition. It is not a general
-distributed lock or a guarantee that messages already delivered to Broadway
-have finished processing. Partitioned topics, multiple topics, and producer
-concurrency greater than one can give a pipeline multiple simultaneous consumer
-states.
+See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
+for the complete event contract.
