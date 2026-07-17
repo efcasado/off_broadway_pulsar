@@ -130,16 +130,12 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:subscription` - The Pulsar subscription name
   - `:consumer_pid` - The underlying Pulsar consumer process
 
-  The module must be loadable and the function must be exported with arity
-  `length(extra_args) + 1`; this is validated when the producer initializes.
-
   The callback runs synchronously in the underlying Pulsar consumer and should
-  return promptly. Exceptions raised by the callback are logged and ignored so
-  an observational callback cannot crash the consumer. Reports are best-effort
-  state observations: the same state may be reported more than once, and consumer
-  termination does not guarantee a final `:passive` report. Treat reports
-  idempotently and monitor `:consumer_pid` if local work must stop when the
-  consumer exits.
+  return promptly. Exceptions raised by the callback propagate and crash the
+  consumer. Reports are best-effort state observations: the same state may be
+  reported more than once, and consumer termination does not guarantee a final
+  `:passive` report. Treat reports idempotently and monitor `:consumer_pid` if
+  local work must stop when the consumer exits.
 
   This signal is scoped to an individual topic or partition. It is not a
   distributed lock or fencing mechanism, and it does not mean messages already
@@ -211,10 +207,7 @@ defmodule OffBroadway.Pulsar.Producer do
     subscription = Keyword.fetch!(opts, :subscription)
     client = Keyword.get(opts, :client, :default)
 
-    active_state_callback =
-      opts
-      |> Keyword.get(:active_state_callback)
-      |> validate_active_state_callback!()
+    active_state_callback = Keyword.get(opts, :active_state_callback)
 
     # Only start Pulsar if host is provided (producer-managed connection)
     # Otherwise, assume Pulsar is already started globally (application-managed connection)
@@ -469,25 +462,5 @@ defmodule OffBroadway.Pulsar.Producer do
   defp validate_positive_integer!(value, name) do
     raise ArgumentError,
           "expected :#{name} to be a positive integer, got: #{inspect(value)}"
-  end
-
-  defp validate_active_state_callback!(nil), do: nil
-
-  defp validate_active_state_callback!({module, function, extra_args} = callback)
-       when is_atom(module) and is_atom(function) and is_list(extra_args) do
-    arity = length(extra_args) + 1
-
-    if !(Code.ensure_loaded?(module) and function_exported?(module, function, arity)) do
-      raise ArgumentError,
-            "expected :active_state_callback #{inspect(module)}.#{function}/#{arity} to be exported"
-    end
-
-    callback
-  end
-
-  defp validate_active_state_callback!(callback) do
-    raise ArgumentError,
-          "expected :active_state_callback to be a {module, function, extra_args} tuple, " <>
-            "got: #{inspect(callback)}"
   end
 end
