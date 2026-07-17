@@ -2,6 +2,8 @@ defmodule OffBroadway.Pulsar.Consumer do
   @moduledoc false
   use Pulsar.Consumer.Callback
 
+  require Logger
+
   @impl true
   def init([broadway_producer, base_topic, consumer_registry, subscription, active_state_callback]) do
     # Notify producer that consumer is ready and needs initial flow.
@@ -61,7 +63,15 @@ defmodule OffBroadway.Pulsar.Consumer do
       consumer_pid: self()
     }
 
-    apply(module, function, [metadata | extra_args])
+    try do
+      apply(module, function, [metadata | extra_args])
+    rescue
+      exception ->
+        Logger.error(
+          "Active state callback #{inspect(module)}.#{function} failed: " <>
+            Exception.format(:error, exception, __STACKTRACE__)
+        )
+    end
   end
 
   # Finds the ConsumerGroup PID among this consumer's process links, looks up

@@ -9,6 +9,8 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   @topic "persistent://public/default/broadway-integration-test"
   @topic_a "persistent://public/default/broadway-multi-topic-a"
   @topic_b "persistent://public/default/broadway-multi-topic-b"
+  @partitioned_topic "persistent://public/default/broadway-failover-partitioned"
+  @partition_count 2
   @message_count 100
   @multi_topic_message_count 20
 
@@ -18,6 +20,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     :ok = System.create_topic(@topic)
     :ok = System.create_topic(@topic_a)
     :ok = System.create_topic(@topic_b)
+    :ok = System.create_partitioned_topic(@partitioned_topic, @partition_count)
 
     {:ok, _client_pid} =
       Pulsar.Client.start_link(
@@ -264,18 +267,17 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     refute Process.alive?(broadway)
   end
 
-  test "Failover consumers report active state through the callback" do
+  test "Failover consumers report active and passive states" do
     subscription = "failover-ownership-sub"
-    callback = {__MODULE__, :notify_active_state, [self()]}
 
-    {:ok, pipeline} =
+    {:ok, first_pipeline} =
       DummyPipeline.start_link(
         test_pid: self(),
         topic: @topic,
         subscription: subscription,
         client: @client,
-        name: :failover_callback_pipeline,
-        active_state_callback: callback,
+        name: :failover_active_pipeline,
+        active_state_callback: {__MODULE__, :notify_active_state, [self(), :first]},
         consumer_opts: [subscription_type: :Failover, initial_position: :latest]
       )
 
@@ -285,14 +287,86 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
                       subscription: ^subscription,
                       consumer_pid: consumer_pid,
                       topic: @topic
-                    }},
+                    }, :first},
                    10_000
 
     assert is_pid(consumer_pid)
+
+    {:ok, second_pipeline} =
+      DummyPipeline.start_link(
+        test_pid: self(),
+        topic: @topic,
+        subscription: subscription,
+        client: @client,
+        name: :failover_standby_pipeline,
+        active_state_callback: {__MODULE__, :notify_active_state, [self(), :second]},
+        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+      )
+
+    states = await_failover_states(%{first: {:active, consumer_pid}}, subscription)
+    assert Enum.sort(Enum.map(states, fn {_tag, {state, _pid}} -> state end)) == [:active, :passive]
+
+    assert :ok = Broadway.stop(first_pipeline)
+    assert :ok = Broadway.stop(second_pipeline)
+  end
+
+  test "Failover callbacks identify individual partition topics" do
+    subscription = "failover-partition-ownership-sub"
+    callback = {__MODULE__, :notify_active_state, [self()]}
+
+    {:ok, pipeline} =
+      DummyPipeline.start_link(
+        test_pid: self(),
+        topic: @partitioned_topic,
+        subscription: subscription,
+        client: @client,
+        name: :failover_partition_callback_pipeline,
+        active_state_callback: callback,
+        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+      )
+
+    topics =
+      for _ <- 1..@partition_count do
+        assert_receive {:active_state_callback,
+                        %{
+                          active_state: :active,
+                          subscription: ^subscription,
+                          consumer_pid: consumer_pid,
+                          topic: topic
+                        }},
+                       10_000
+
+        assert is_pid(consumer_pid)
+        topic
+      end
+
+    expected_topics =
+      for partition <- 0..(@partition_count - 1),
+          do: Pulsar.PartitionTopic.name(@partitioned_topic, partition)
+
+    assert MapSet.new(topics) == MapSet.new(expected_topics)
     assert :ok = Broadway.stop(pipeline)
   end
 
   def notify_active_state(metadata, test_pid) do
     send(test_pid, {:active_state_callback, metadata})
+  end
+
+  def notify_active_state(metadata, test_pid, pipeline) do
+    send(test_pid, {:active_state_callback, metadata, pipeline})
+  end
+
+  defp await_failover_states(states, subscription) do
+    if map_size(states) == 2 and Enum.sort(Enum.map(states, fn {_tag, {state, _pid}} -> state end)) == [:active, :passive] do
+      states
+    else
+      receive do
+        {:active_state_callback,
+         %{active_state: state, subscription: ^subscription, consumer_pid: consumer_pid, topic: @topic}, pipeline} ->
+          await_failover_states(Map.put(states, pipeline, {state, consumer_pid}), subscription)
+      after
+        10_000 -> flunk("timed out waiting for one active and one passive Failover consumer")
+      end
+    end
   end
 end

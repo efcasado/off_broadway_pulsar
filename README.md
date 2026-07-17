@@ -105,5 +105,12 @@ Reports may repeat, and consumer termination does not guarantee a final
 when local work must stop with the consumer. This signal is per topic or
 partition; it is not a distributed lock or fencing mechanism.
 
+The callback runs synchronously and should return promptly. Exceptions raised by
+the callback are logged and ignored so an observational callback cannot crash
+the consumer. With Broadway producer concurrency greater than one, multiple
+consumers can report different states for the same topic and subscription at the
+same time; track those observations by `metadata.consumer_pid`, not by topic
+alone.
+
 See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
 for the complete callback contract.

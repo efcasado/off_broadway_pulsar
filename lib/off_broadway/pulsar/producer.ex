@@ -133,16 +133,22 @@ defmodule OffBroadway.Pulsar.Producer do
   The module must be loadable and the function must be exported with arity
   `length(extra_args) + 1`; this is validated when the producer initializes.
 
-  The callback runs synchronously in the underlying Pulsar consumer, should return
-  promptly, and propagates failures to that consumer. Reports are best-effort
-  state observations: the same state may be reported more than once, and
-  consumer termination does not guarantee a final `:passive` report. Treat
-  reports idempotently and monitor `:consumer_pid` if local work must stop when
-  the consumer exits.
+  The callback runs synchronously in the underlying Pulsar consumer and should
+  return promptly. Exceptions raised by the callback are logged and ignored so
+  an observational callback cannot crash the consumer. Reports are best-effort
+  state observations: the same state may be reported more than once, and consumer
+  termination does not guarantee a final `:passive` report. Treat reports
+  idempotently and monitor `:consumer_pid` if local work must stop when the
+  consumer exits.
 
   This signal is scoped to an individual topic or partition. It is not a
   distributed lock or fencing mechanism, and it does not mean messages already
   delivered to Broadway have finished processing.
+
+  With Broadway producer concurrency greater than one, multiple underlying
+  consumers can report different states for the same topic and subscription at
+  the same time. Track concurrent ownership observations by `:consumer_pid`, not
+  by topic alone.
 
   ## Usage Patterns
 

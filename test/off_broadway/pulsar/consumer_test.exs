@@ -1,6 +1,8 @@
 defmodule OffBroadway.Pulsar.ConsumerTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias OffBroadway.Pulsar.Consumer
 
   describe "terminate/2" do
@@ -73,11 +75,25 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
       assert Consumer.became_passive(state) == {:noreply, state}
       refute_receive {:active_state_callback, _, _}
     end
+
+    test "logs and contains callback exceptions" do
+      state = %{
+        active_state_callback_state()
+        | active_state_callback: {__MODULE__, :raise_from_active_state, []}
+      }
+
+      log = capture_log(fn -> assert Consumer.became_active(state) == {:noreply, state} end)
+
+      assert log =~ "Active state callback"
+      assert log =~ "intentional callback failure"
+    end
   end
 
   def notify_active_state(metadata, test_pid, configured_argument) do
     send(test_pid, {:active_state_callback, metadata, configured_argument})
   end
+
+  def raise_from_active_state(_metadata), do: raise("intentional callback failure")
 
   defp active_state_callback_state do
     %{
