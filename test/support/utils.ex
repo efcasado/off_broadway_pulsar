@@ -12,4 +12,8 @@ defmodule OffBroadwayPulsar.Test.Support.Utils do
       wait_for(fun, attempts - 1, interval_ms)
     end
   end
+
+  def notify_active_state(metadata, test_pid, tag) do
+    send(test_pid, {:active_state_callback, metadata, tag})
+  end
 end

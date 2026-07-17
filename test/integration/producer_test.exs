@@ -3,6 +3,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
   alias OffBroadwayPulsar.Test.Support.DummyConsumer
   alias OffBroadwayPulsar.Test.Support.DummyPipeline
+  alias OffBroadwayPulsar.Test.Support.Utils
 
   @moduletag :integration
   @client :producer_test_client
@@ -277,7 +278,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         subscription: subscription,
         client: @client,
         name: :failover_active_pipeline,
-        active_state_callback: {__MODULE__, :notify_active_state, [self(), :first]},
+        active_state_callback: {Utils, :notify_active_state, [self(), :first]},
         consumer_opts: [subscription_type: :Failover, initial_position: :latest]
       )
 
@@ -299,12 +300,11 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         subscription: subscription,
         client: @client,
         name: :failover_standby_pipeline,
-        active_state_callback: {__MODULE__, :notify_active_state, [self(), :second]},
+        active_state_callback: {Utils, :notify_active_state, [self(), :second]},
         consumer_opts: [subscription_type: :Failover, initial_position: :latest]
       )
 
-    states = await_failover_states(%{first: {:active, consumer_pid}}, subscription)
-    assert Enum.sort(Enum.map(states, fn {_tag, {state, _pid}} -> state end)) == [:active, :passive]
+    await_failover_states(%{first: :active}, subscription)
 
     assert :ok = Broadway.stop(first_pipeline)
     assert :ok = Broadway.stop(second_pipeline)
@@ -312,7 +312,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
   test "Failover callbacks identify individual partition topics" do
     subscription = "failover-partition-ownership-sub"
-    callback = {__MODULE__, :notify_active_state, [self()]}
+    callback = {Utils, :notify_active_state, [self(), :partition]}
 
     {:ok, pipeline} =
       DummyPipeline.start_link(
@@ -333,7 +333,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
                           subscription: ^subscription,
                           consumer_pid: consumer_pid,
                           topic: topic
-                        }},
+                        }, :partition},
                        10_000
 
         assert is_pid(consumer_pid)
@@ -348,25 +348,13 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     assert :ok = Broadway.stop(pipeline)
   end
 
-  def notify_active_state(metadata, test_pid) do
-    send(test_pid, {:active_state_callback, metadata})
-  end
-
-  def notify_active_state(metadata, test_pid, pipeline) do
-    send(test_pid, {:active_state_callback, metadata, pipeline})
-  end
-
   defp await_failover_states(states, subscription) do
-    if map_size(states) == 2 and Enum.sort(Enum.map(states, fn {_tag, {state, _pid}} -> state end)) == [:active, :passive] do
-      states
-    else
-      receive do
-        {:active_state_callback,
-         %{active_state: state, subscription: ^subscription, consumer_pid: consumer_pid, topic: @topic}, pipeline} ->
-          await_failover_states(Map.put(states, pipeline, {state, consumer_pid}), subscription)
-      after
-        10_000 -> flunk("timed out waiting for one active and one passive Failover consumer")
-      end
+    if Enum.sort(Map.values(states)) != [:active, :passive] do
+      assert_receive {:active_state_callback, %{active_state: state, subscription: ^subscription, topic: @topic},
+                      pipeline},
+                     10_000
+
+      await_failover_states(Map.put(states, pipeline, state), subscription)
     end
   end
 end

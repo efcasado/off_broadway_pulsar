@@ -2,6 +2,7 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
   use ExUnit.Case, async: true
 
   alias OffBroadway.Pulsar.Consumer
+  alias OffBroadwayPulsar.Test.Support.Utils
 
   describe "terminate/2" do
     test "is defined and returns :ok" do
@@ -86,10 +87,6 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
     end
   end
 
-  def notify_active_state(metadata, test_pid, configured_argument) do
-    send(test_pid, {:active_state_callback, metadata, configured_argument})
-  end
-
   def raise_from_active_state(_metadata), do: raise("intentional callback failure")
 
   defp active_state_callback_state do
@@ -97,7 +94,7 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
       broadway_producer: self(),
       topic: "my-topic",
       subscription: "my-subscription",
-      active_state_callback: {__MODULE__, :notify_active_state, [self(), :configured_argument]}
+      active_state_callback: {Utils, :notify_active_state, [self(), :configured_argument]}
     }
   end
 end

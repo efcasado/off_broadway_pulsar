@@ -95,20 +95,10 @@ producer: [
 ]
 ```
 
-The callback is invoked as
-`MyApp.FailoverObserver.handle_active_state(metadata)`. Any configured extra
-arguments are passed after `metadata`.
-
-Reports may repeat, and consumer termination does not guarantee a final
-`:passive` report. Handle them idempotently and monitor `metadata.consumer_pid`
-when local work must stop with the consumer. This signal is per topic or
-partition; it is not a distributed lock or fencing mechanism.
-
-The callback runs synchronously and should return promptly. Exceptions raised by
-the callback propagate and crash the consumer. With Broadway producer
-concurrency greater than one, multiple consumers can report different states for
-the same topic and subscription at the same time; track those observations by
-`metadata.consumer_pid`, not by topic alone.
+The callback receives a metadata map (the active state, the topic or partition,
+the subscription, and the consumer pid) followed by any configured extra
+arguments. Reports are best-effort observations — they may repeat, and they are
+not a distributed lock or fencing mechanism.
 
 See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
 for the complete callback contract.
