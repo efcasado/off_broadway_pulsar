@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.5.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.4.0...v1.5.0) (2026-07-19)
+
+
+### Features
+
+* failover active state change callback ([#70](https://github.com/efcasado/off_broadway_pulsar/issues/70)) ([fcba675](https://github.com/efcasado/off_broadway_pulsar/commit/fcba67544517bf78a327eb71f2dfc6dc8d031e76))
+
+
+### Dependencies
+
+* bump pulsar from 2.10.1 to 2.11.0 ([#69](https://github.com/efcasado/off_broadway_pulsar/issues/69)) ([03b6e8a](https://github.com/efcasado/off_broadway_pulsar/commit/03b6e8afc13686a77848643df67289f920a6771d))
+* bump pulsar from 2.9.0 to 2.10.1 ([#67](https://github.com/efcasado/off_broadway_pulsar/issues/67)) ([26e99ed](https://github.com/efcasado/off_broadway_pulsar/commit/26e99ed2d8963ad147e819353e39764878b8494e))
+* **ci:** bump actions/cache from 5 to 6 ([#68](https://github.com/efcasado/off_broadway_pulsar/issues/68)) ([8e3f33d](https://github.com/efcasado/off_broadway_pulsar/commit/8e3f33d91423cd21302b828e8183df0106748e23))
+* **ci:** bump actions/checkout from 6 to 7 ([#65](https://github.com/efcasado/off_broadway_pulsar/issues/65)) ([85e5949](https://github.com/efcasado/off_broadway_pulsar/commit/85e59491e1c1334b0910991c6007f9aa2bd4847e))
+
 ## [1.4.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.3.11...v1.4.0) (2026-06-06)
 
 
