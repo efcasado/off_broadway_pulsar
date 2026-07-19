@@ -3,7 +3,7 @@ defmodule OffBroadway.Pulsar.Consumer do
   use Pulsar.Consumer.Callback
 
   @impl true
-  def init([broadway_producer, base_topic, consumer_registry]) do
+  def init([broadway_producer, base_topic, consumer_registry, subscription, active_state_callback]) do
     # Notify producer that consumer is ready and needs initial flow.
     # topic is included so the producer can use it as a stable map key,
     # avoiding stale PID accumulation when this consumer restarts.
@@ -14,7 +14,14 @@ defmodule OffBroadway.Pulsar.Consumer do
     # base_topic unchanged.
     topic = resolve_topic(self(), base_topic, consumer_registry)
     send(broadway_producer, {:consumer_ready, self(), topic})
-    {:ok, %{broadway_producer: broadway_producer, topic: topic}}
+
+    {:ok,
+     %{
+       broadway_producer: broadway_producer,
+       topic: topic,
+       subscription: subscription,
+       active_state_callback: active_state_callback
+     }}
   end
 
   @impl true
@@ -26,6 +33,35 @@ defmodule OffBroadway.Pulsar.Consumer do
     # Return {:noreply, state} to use manual ACK mode
     # Broadway will handle ACK/NACK through the acknowledger
     {:noreply, state}
+  end
+
+  @impl true
+  def became_active(state) do
+    invoke_active_state_callback(state, :active)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def became_passive(state) do
+    invoke_active_state_callback(state, :passive)
+
+    {:noreply, state}
+  end
+
+  defp invoke_active_state_callback(%{active_state_callback: nil}, _active_state), do: :ok
+
+  defp invoke_active_state_callback(state, active_state) do
+    {module, function, extra_args} = state.active_state_callback
+
+    metadata = %{
+      active_state: active_state,
+      topic: state.topic,
+      subscription: state.subscription,
+      consumer_pid: self()
+    }
+
+    apply(module, function, [metadata | extra_args])
   end
 
   # Finds the ConsumerGroup PID among this consumer's process links, looks up

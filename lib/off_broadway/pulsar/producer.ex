@@ -72,13 +72,15 @@ defmodule OffBroadway.Pulsar.Producer do
     One consumer is started per topic. Providing a single topic via `:topic` is equivalent
     to `topics: [topic]` and is kept for backwards compatibility.
   - `:subscription` - The subscription name (required)
+  - `:active_state_callback` - An optional `{module, function, extra_args}` tuple that receives
+    active/passive state changes for Failover consumers. See "Failover Active State" below.
   - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
     - `:auth` - Authentication configuration
     - `:conn_timeout` - Connection timeout in milliseconds
   - `:consumer_opts` - Consumer-specific options passed to `Pulsar.start_consumer/4` (optional).
     Applied to all topics when using `:topics`.
-    - `:subscription_type` - Subscription type (`:Exclusive`, `:Shared`, `:Key_Shared`, default: `:Shared`)
+    - `:subscription_type` - Subscription type (`:Exclusive`, `:Failover`, `:Shared`, `:Key_Shared`, default: `:Shared`)
     - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
     - `:durable` - Whether subscription is durable (default: `true`)
     - `:force_create_topic` - Force topic creation (default: `true`)
@@ -115,6 +117,34 @@ defmodule OffBroadway.Pulsar.Producer do
 
   When using `producer: [concurrency: N]` with N > 1, each producer maintains
   its own independent permit window.
+
+  ## Failover Active State
+
+  Consumers using a `:Failover` subscription report broker-provided active and
+  passive state changes through the optional `:active_state_callback`. Configure
+  the callback as a `{module, function, extra_args}` tuple. It is invoked as
+  `apply(module, function, [metadata | extra_args])`, where `metadata` contains:
+
+  - `:active_state` - Either `:active` or `:passive`
+  - `:topic` - The topic, or individual partition topic, whose state changed
+  - `:subscription` - The Pulsar subscription name
+  - `:consumer_pid` - The underlying Pulsar consumer process
+
+  The callback runs synchronously in the underlying Pulsar consumer and should
+  return promptly. Exceptions raised by the callback propagate and crash the
+  consumer. Reports are best-effort state observations: the same state may be
+  reported more than once, and consumer termination does not guarantee a final
+  `:passive` report. Treat reports idempotently and monitor `:consumer_pid` if
+  local work must stop when the consumer exits.
+
+  This signal is scoped to an individual topic or partition. It is not a
+  distributed lock or fencing mechanism, and it does not mean messages already
+  delivered to Broadway have finished processing.
+
+  With Broadway producer concurrency greater than one, multiple underlying
+  consumers can report different states for the same topic and subscription at
+  the same time. Track concurrent ownership observations by `:consumer_pid`, not
+  by topic alone.
 
   ## Usage Patterns
 
@@ -177,6 +207,8 @@ defmodule OffBroadway.Pulsar.Producer do
     subscription = Keyword.fetch!(opts, :subscription)
     client = Keyword.get(opts, :client, :default)
 
+    active_state_callback = Keyword.get(opts, :active_state_callback)
+
     # Only start Pulsar if host is provided (producer-managed connection)
     # Otherwise, assume Pulsar is already started globally (application-managed connection)
     case Keyword.fetch(opts, :host) do
@@ -214,7 +246,10 @@ defmodule OffBroadway.Pulsar.Producer do
         topic_opts =
           consumer_opts_base
           |> Keyword.put(:name, unique_name)
-          |> Keyword.put(:init_args, [self(), topic, consumer_registry])
+          |> Keyword.put(
+            :init_args,
+            [self(), topic, consumer_registry, subscription, active_state_callback]
+          )
 
         {:ok, group} =
           Pulsar.start_consumer(

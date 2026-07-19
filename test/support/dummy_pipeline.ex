@@ -37,6 +37,7 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
       |> maybe_put(opts, :flow_initial)
       |> maybe_put(opts, :flow_threshold)
       |> maybe_put(opts, :flow_refill)
+      |> maybe_put(opts, :active_state_callback)
 
     Broadway.start_link(__MODULE__,
       name: name,

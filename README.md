@@ -76,3 +76,29 @@ producer: [
   concurrency: 1
 ]
 ```
+
+## Failover active state
+
+For `:Failover` subscriptions, `off_broadway_pulsar` reports when an underlying
+Pulsar consumer becomes active or passive through an optional callback. Configure
+the callback as a `{module, function, extra_args}` tuple:
+
+```elixir
+producer: [
+  module: {OffBroadway.Pulsar.Producer,
+    topic: "persistent://public/default/my-topic",
+    subscription: "my-subscription",
+    consumer_opts: [subscription_type: :Failover],
+    active_state_callback: {MyApp.FailoverObserver, :handle_active_state, []}
+  },
+  concurrency: 1
+]
+```
+
+The callback receives a metadata map (the active state, the topic or partition,
+the subscription, and the consumer pid) followed by any configured extra
+arguments. Reports are best-effort observations — they may repeat, and they are
+not a distributed lock or fencing mechanism.
+
+See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
+for the complete callback contract.
