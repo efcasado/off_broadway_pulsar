@@ -14,7 +14,7 @@ Add `:off_broadway_pulsar` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:off_broadway_pulsar, "~> 1.4.0"} <!-- x-release-please-version -->
+    {:off_broadway_pulsar, "~> 1.5.0"} <!-- x-release-please-version -->
   ]
 end
 ```
