@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/efcasado/off_broadway_pulsar/compare/v1.5.0...v1.5.1) (2026-07-20)
+
+
+### Dependencies
+
+* bump pulsar from 2.11.0 to 2.11.1 ([#72](https://github.com/efcasado/off_broadway_pulsar/issues/72)) ([3a1a017](https://github.com/efcasado/off_broadway_pulsar/commit/3a1a017faa878cc1c8587d21aa66a4d18f535cf8))
+
 ## [1.5.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.4.0...v1.5.0) (2026-07-19)
 
 
