@@ -20,17 +20,9 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
       end
 
     producer_config =
-      case {Keyword.get(opts, :host), Keyword.get(opts, :client)} do
-        {nil, nil} ->
-          [host: "pulsar://localhost:6650", subscription: subscription, consumer_opts: consumer_opts] ++
-            topic_config
-
-        {host, _} when host != nil ->
-          [host: host, subscription: subscription, consumer_opts: consumer_opts] ++ topic_config
-
-        {nil, client} ->
-          [client: client, subscription: subscription, consumer_opts: consumer_opts] ++ topic_config
-      end
+      [subscription: subscription, consumer_opts: consumer_opts] ++
+        topic_config ++
+        List.wrap(if client = Keyword.get(opts, :client), do: {:client, client})
 
     producer_config =
       producer_config

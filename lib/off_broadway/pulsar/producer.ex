@@ -7,10 +7,8 @@ defmodule OffBroadway.Pulsar.Producer do
   mechanism, which proactively requests batches of messages rather than
   requesting per-message.
 
-  Supports two connection patterns:
-  - **Producer-managed**: Pass `:host` to have the producer start its own `Pulsar.Client`
-  - **Application-managed**: Omit `:host` to use a `Pulsar.Client` already running in your
-    application's supervision tree
+  The connection belongs to your application. Supervise a `Pulsar.Client` and name it
+  with `:client`; this producer attaches its consumers to it.
 
   See `start_link/1` for detailed configuration options.
   """
@@ -20,18 +18,6 @@ defmodule OffBroadway.Pulsar.Producer do
   alias Broadway.Message
 
   require Logger
-
-  @supported_conn_opts [
-    :socket_opts,
-    :auth,
-    :conn_timeout,
-    :max_frame_size,
-    :ping_interval,
-    :cleanup_interval,
-    :request_timeout
-  ]
-
-  @default_conn_opts []
 
   # Excludes :consumer_count, whose extra workers would all report the same resolved
   # topic and corrupt permit accounting, and the :flow_* options, which this producer
@@ -71,12 +57,8 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Configuration
 
-  - `:host` - Broker URL (e.g., "pulsar://localhost:6650") (optional).
-    If provided, the producer starts its own `Pulsar.Client`, linked to the producer.
-    If not provided, a `Pulsar.Client` named `:client` is assumed to be running already.
-  - `:client` - Name of the `Pulsar.Client` to use (optional, default: `:default`).
-    Names the client this producer starts when `:host` is given, and selects the client
-    to attach to when it is not.
+  - `:client` - Name of the `Pulsar.Client` to attach to (optional, default: `:default`).
+    The client must already be running; see "Starting a client" below.
   - `:topic` - A single Pulsar topic to consume from (required if `:topics` is not set)
   - `:topics` - A list of Pulsar topics to consume from (required if `:topic` is not set).
     One consumer is started per topic. Providing a single topic via `:topic` is equivalent
@@ -84,15 +66,6 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:subscription` - The subscription name (required)
   - `:active_state_callback` - An optional `{module, function, extra_args}` tuple that receives
     active/passive state changes for Failover consumers. See "Failover Active State" below.
-  - `:conn_opts` - Connection options passed to `Pulsar.Client.start_link/1` (optional, only
-    used if `:host` is provided):
-    - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
-    - `:auth` - Authentication configuration, as `[type: module, opts: keyword]`
-    - `:conn_timeout` - Connection timeout in milliseconds (default: 1_000)
-    - `:max_frame_size` - Largest frame accepted from the cluster, in bytes
-    - `:ping_interval` - Milliseconds between keepalive pings (default: 60_000)
-    - `:cleanup_interval` - Milliseconds between sweeps for unanswered requests (default: 30_000)
-    - `:request_timeout` - Milliseconds after which an unanswered request fails (default: 60_000)
   - `:consumer_opts` - Consumer-specific options passed to `Pulsar.Consumer.start/1` (optional).
     Applied to all topics when using `:topics`.
     - `:subscription_type` - Subscription type (`:exclusive`, `:failover`, `:shared`, `:key_shared`, default: `:shared`)
@@ -196,46 +169,48 @@ defmodule OffBroadway.Pulsar.Producer do
   the same time. Track concurrent ownership observations by `:consumer_pid`, not
   by topic alone.
 
-  ## Usage Patterns
+  ## Starting a client
 
-  ### Pattern 1: Single topic
+  Supervise the client above the pipeline, so the connection outlives any one producer
+  stage and is shared by all of them:
 
-      producer: [
-        module: {OffBroadway.Pulsar.Producer,
-          host: "pulsar://localhost:6650",
-          topic: "my-topic",
-          subscription: "my-subscription"
-        }
-      ]
-
-  ### Pattern 2: Multiple topics
-
-      producer: [
-        module: {OffBroadway.Pulsar.Producer,
-          host: "pulsar://localhost:6650",
-          topics: ["topic-a", "topic-b", "topic-c"],
-          subscription: "my-subscription"
-        }
-      ]
-
-  ### Pattern 3: Application-managed client (no host)
-
-      # In your application.ex:
       children = [
         {Pulsar.Client, host: "pulsar://localhost:6650"},
         MyApp.PulsarPipeline
       ]
 
-      # In your producer config:
+  A single topic:
+
       producer: [
         module: {OffBroadway.Pulsar.Producer,
-          topics: ["topic-a", "topic-b"],
+          topic: "my-topic",
           subscription: "my-subscription"
         }
       ]
 
-  Preferred over `:host`: the client's lifetime is owned by your supervision tree
-  rather than by whichever producer process happened to start it.
+  Or several, one consumer each:
+
+      producer: [
+        module: {OffBroadway.Pulsar.Producer,
+          topics: ["topic-a", "topic-b", "topic-c"],
+          subscription: "my-subscription"
+        }
+      ]
+
+  Name the client to run more than one, or to consume from more than one cluster:
+
+      children = [
+        {Pulsar.Client, name: :analytics, host: "pulsar://analytics:6650"},
+        MyApp.AnalyticsPipeline
+      ]
+
+      producer: [
+        module: {OffBroadway.Pulsar.Producer,
+          client: :analytics,
+          topic: "my-topic",
+          subscription: "my-subscription"
+        }
+      ]
   """
   def start_link(opts) do
     GenStage.start_link(__MODULE__, opts)
@@ -262,7 +237,7 @@ defmodule OffBroadway.Pulsar.Producer do
 
     active_state_callback = Keyword.get(opts, :active_state_callback)
 
-    :ok = maybe_start_client(opts, client)
+    ensure_client_running!(client)
 
     consumer_opts_base =
       opts
@@ -384,6 +359,8 @@ defmodule OffBroadway.Pulsar.Producer do
 
     new_demand = demand - length(to_dispatch)
 
+    discard(to_drop)
+
     # Decrement outstanding permits per topic based on how many broker
     # messages each topic contributed to this dispatch batch.
     consumed = permits_consumed(to_dispatch ++ to_drop)
@@ -405,9 +382,9 @@ defmodule OffBroadway.Pulsar.Producer do
     {to_dispatch, to_drop, remaining, _count} =
       Enum.reduce(buffer, {[], [], [], 0}, fn {msg, _pid, _context} = entry, {dispatch, drop, rest, count} ->
         cond do
-          # No usable payload, so it is dropped rather than dispatched — but it goes to
-          # `drop`, not `rest`, so the chunks that did arrive still count against permits.
-          not Pulsar.Message.complete?(msg) ->
+          # Nothing the pipeline can do with it, so it goes to `drop` rather than `rest`:
+          # dropped entries are acked and still counted against the permit window.
+          not deliverable?(msg) ->
             {dispatch, [entry | drop], rest, count}
 
           count < demand ->
@@ -423,6 +400,23 @@ defmodule OffBroadway.Pulsar.Producer do
       Enum.reverse(to_drop),
       Enum.reverse(remaining)
     }
+  end
+
+  # An incomplete chunked message has only part of its payload and an invalid one has
+  # payload bytes that failed validation. Neither can be handed to the pipeline.
+  defp deliverable?(msg), do: Pulsar.Message.complete?(msg) and Pulsar.Message.valid?(msg)
+
+  # Undeliverable messages never reach the acknowledger, so they are acked here.
+  # Leaving them unacked would hold the subscription's cursor behind them for the
+  # life of the consumer; there is no point nacking, since redelivery cannot fix
+  # a partial payload or a failed checksum.
+  defp discard(entries) do
+    Enum.each(entries, fn {msg, consumer_pid, _context} ->
+      case Pulsar.Consumer.ack(consumer_pid, msg.message_id) do
+        :ok -> :ok
+        {:error, reason} -> Logger.error("Failed to ack undeliverable message: #{inspect(reason)}")
+      end
+    end)
   end
 
   # Returns a map of topic => broker_message_count for the given buffer entries,
@@ -492,29 +486,20 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  defp maybe_start_client(opts, client) do
-    case Keyword.fetch(opts, :host) do
-      {:ok, host} ->
-        client_opts =
-          opts
-          |> Keyword.get(:conn_opts, @default_conn_opts)
-          |> Keyword.take(@supported_conn_opts)
-          |> Keyword.merge(host: host, name: client)
+  # Without this, an unstarted client surfaces as a :noproc exit from deep inside the
+  # client's supervisor when the first consumer is started.
+  defp ensure_client_running!(client) do
+    if is_nil(Process.whereis(client)) do
+      raise ArgumentError, """
+      Pulsar client #{inspect(client)} is not running.
 
-        start_client(client_opts, client)
+      Supervise it above the pipeline:
 
-      :error ->
-        :ok
-    end
-  end
-
-  # With concurrency > 1 every producer runs this; all but the first find the client
-  # already up, which is success rather than failure.
-  defp start_client(client_opts, client) do
-    case Pulsar.Client.start_link(client_opts) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, reason} -> raise "failed to start Pulsar client #{inspect(client)}: #{inspect(reason)}"
+          children = [
+            {Pulsar.Client, name: #{inspect(client)}, host: "pulsar://localhost:6650"},
+            MyApp.PulsarPipeline
+          ]
+      """
     end
   end
 

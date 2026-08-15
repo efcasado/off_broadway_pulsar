@@ -15,6 +15,18 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
     end
   end
 
+  describe "handle_invalid_message/2" do
+    test "forwards to the producer instead of acking, so permits stay accounted" do
+      state = active_state_callback_state()
+      message = %Pulsar.Message{payload: "corrupt", validation_error: :checksum_mismatch}
+
+      assert Consumer.handle_invalid_message(message, state) == {:noreply, state}
+
+      assert_receive {:pulsar_message, ^message, consumer_pid, %{topic: "my-topic"}}
+      assert consumer_pid == self()
+    end
+  end
+
   describe "handle_call/3" do
     test "returns not_implemented error by default" do
       assert Consumer.handle_call(:anything, {self(), :tag}, %{}) ==

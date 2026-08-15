@@ -98,30 +98,14 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     assert unique_producers > 1, "Expected multiple producers, got #{unique_producers}"
   end
 
-  test "application-managed client pattern" do
+  test "attaches to a named client" do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
         topic: @topic,
-        subscription: "app-managed-sub",
+        subscription: "named-client-sub",
         client: @client,
-        name: :app_managed_pipeline,
-        flow_initial: 5,
-        flow_threshold: 2,
-        flow_refill: 5
-      )
-
-    assert_receive {:message_handled, %Broadway.Message{}, _processor}, 10_000
-  end
-
-  test "producer-managed client pattern" do
-    {:ok, _broadway} =
-      DummyPipeline.start_link(
-        test_pid: self(),
-        topic: @topic,
-        subscription: "producer-managed-sub",
-        host: "pulsar://localhost:6650",
-        name: :producer_managed_pipeline,
+        name: :named_client_pipeline,
         flow_initial: 5,
         flow_threshold: 2,
         flow_refill: 5

@@ -21,7 +21,17 @@ end
 
 ## Quick Start
 
-Assuming you have Pulsar running on `localhost:6650`, you can create a Broadway pipeline like this:
+Supervise a `Pulsar.Client` alongside your pipeline — the producer attaches its consumers
+to it, so the connection is shared by every producer stage and outlives any one of them:
+
+```elixir
+children = [
+  {Pulsar.Client, host: "pulsar://localhost:6650"},
+  MyApp.PulsarPipeline
+]
+```
+
+Then, assuming Pulsar is running on `localhost:6650`:
 
 ```elixir
 defmodule MyApp.PulsarPipeline do
@@ -32,8 +42,7 @@ defmodule MyApp.PulsarPipeline do
       name: __MODULE__,
       producer: [
         module: {OffBroadway.Pulsar.Producer,
-          host: "pulsar://localhost:6650",
-          topics: [persistent://public/default/my-topic"],
+          topics: ["persistent://public/default/my-topic"],
           subscription: "my-subscription"
         },
         concurrency: 1
@@ -64,22 +73,20 @@ defmodule MyApp.PulsarPipeline do
 end
 ```
 
-If you run a `Pulsar.Client` in your application supervision tree (preferred, since the
-connection then outlives any one producer) omit `:host` and optionally specify `:client`:
+The client defaults to `:default`. Name it to run more than one, or to consume from more
+than one cluster, and select it with `:client`:
 
 ```elixir
-# In your application.ex:
 children = [
-  {Pulsar.Client, host: "pulsar://localhost:6650"},
-  MyApp.PulsarPipeline
+  {Pulsar.Client, name: :analytics, host: "pulsar://analytics:6650"},
+  MyApp.AnalyticsPipeline
 ]
 
-# In your producer config:
 producer: [
   module: {OffBroadway.Pulsar.Producer,
+    client: :analytics,
     topic: "persistent://public/default/my-topic",
-    subscription: "my-subscription",
-    client: :default  # Optional, defaults to :default
+    subscription: "my-subscription"
   },
   concurrency: 1
 ]
