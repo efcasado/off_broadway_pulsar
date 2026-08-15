@@ -20,12 +20,8 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
       end
 
     producer_config =
-      [subscription: subscription, consumer_opts: consumer_opts] ++
-        topic_config ++
-        List.wrap(if client = Keyword.get(opts, :client), do: {:client, client})
-
-    producer_config =
-      producer_config
+      ([subscription: subscription, consumer_opts: consumer_opts] ++ topic_config)
+      |> maybe_put(opts, :client)
       |> maybe_put(opts, :flow_initial)
       |> maybe_put(opts, :flow_threshold)
       |> maybe_put(opts, :flow_refill)

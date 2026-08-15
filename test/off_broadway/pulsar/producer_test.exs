@@ -25,7 +25,8 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       %{consumer: consumer, state: state(consumer)}
     end
 
-    test "an incomplete chunked message is acked and dropped, not dispatched", %{state: state} do
+    test "an incomplete chunked message is dropped, acked and counted", %{consumer: consumer, state: state} do
+      # Two of three chunks arrived before it expired, so the broker charged two permits.
       message = %Pulsar.Message{
         payload: "part",
         message_id: [:id_1, :id_2],
@@ -36,27 +37,17 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       assert_receive {:ack, [:id_1, :id_2]}
       assert new_state.buffer == []
+      assert %{"topic" => {^consumer, 8}} = new_state.consumers
     end
 
-    test "an invalid message is acked and dropped, not dispatched", %{state: state} do
+    test "an invalid message is dropped, acked and counted", %{consumer: consumer, state: state} do
       message = %Pulsar.Message{payload: "corrupt", message_id: :id, validation_error: :checksum_mismatch}
 
       assert {:noreply, [], new_state} = deliver(message, state)
 
       assert_receive {:ack, [:id]}
       assert new_state.buffer == []
-    end
-
-    test "dropped messages still count against the permit window", %{consumer: consumer, state: state} do
-      # Two chunks received before the message expired, so the broker charged two permits.
-      message = %Pulsar.Message{
-        message_id: [:id_1, :id_2],
-        chunk_metadata: %{chunked: true, complete: false, message_ids: [:id_1, :id_2]}
-      }
-
-      assert {:noreply, [], new_state} = deliver(message, state)
-
-      assert %{"topic" => {^consumer, 8}} = new_state.consumers
+      assert %{"topic" => {^consumer, 9}} = new_state.consumers
     end
 
     test "a complete, valid message is dispatched and left for the acknowledger", %{state: state} do
@@ -72,7 +63,8 @@ defmodule OffBroadway.Pulsar.ProducerTest do
   end
 
   defp deliver(message, state) do
-    Producer.handle_info({:pulsar_message, message, elem(state.consumers["topic"], 0), context()}, state)
+    %{"topic" => {consumer, _permits}} = state.consumers
+    Producer.handle_info({:pulsar_message, message, consumer, context()}, state)
   end
 
   defp state(consumer) do

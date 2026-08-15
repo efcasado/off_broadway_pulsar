@@ -7,8 +7,8 @@ defmodule OffBroadway.Pulsar.Producer do
   mechanism, which proactively requests batches of messages rather than
   requesting per-message.
 
-  The connection belongs to your application. Supervise a `Pulsar.Client` and name it
-  with `:client`; this producer attaches its consumers to it.
+  The connection belongs to your application: supervise a `Pulsar.Client` and this
+  producer attaches its consumers to it.
 
   See `start_link/1` for detailed configuration options.
   """
@@ -141,6 +141,10 @@ defmodule OffBroadway.Pulsar.Producer do
   Those fields come from `Pulsar.Message`, so they answer the same way whether a message
   arrived on its own, inside a batch, or split across chunks.
 
+  Two kinds of message never reach the pipeline: an incomplete chunked message, whose
+  payload is a fragment, and one that failed validation. Both are logged, acknowledged
+  and dropped.
+
   ## Failover Active State
 
   Consumers using a `:failover` subscription report broker-provided active and
@@ -179,20 +183,9 @@ defmodule OffBroadway.Pulsar.Producer do
         MyApp.PulsarPipeline
       ]
 
-  A single topic:
-
       producer: [
         module: {OffBroadway.Pulsar.Producer,
-          topic: "my-topic",
-          subscription: "my-subscription"
-        }
-      ]
-
-  Or several, one consumer each:
-
-      producer: [
-        module: {OffBroadway.Pulsar.Producer,
-          topics: ["topic-a", "topic-b", "topic-c"],
+          topics: ["topic-a", "topic-b"],
           subscription: "my-subscription"
         }
       ]
@@ -382,8 +375,7 @@ defmodule OffBroadway.Pulsar.Producer do
     {to_dispatch, to_drop, remaining, _count} =
       Enum.reduce(buffer, {[], [], [], 0}, fn {msg, _pid, _context} = entry, {dispatch, drop, rest, count} ->
         cond do
-          # Nothing the pipeline can do with it, so it goes to `drop` rather than `rest`:
-          # dropped entries are acked and still counted against the permit window.
+          # `drop` rather than `rest`: acked below, and still counted against permits.
           not deliverable?(msg) ->
             {dispatch, [entry | drop], rest, count}
 
@@ -402,21 +394,24 @@ defmodule OffBroadway.Pulsar.Producer do
     }
   end
 
-  # An incomplete chunked message has only part of its payload and an invalid one has
-  # payload bytes that failed validation. Neither can be handed to the pipeline.
   defp deliverable?(msg), do: Pulsar.Message.complete?(msg) and Pulsar.Message.valid?(msg)
 
-  # Undeliverable messages never reach the acknowledger, so they are acked here.
-  # Leaving them unacked would hold the subscription's cursor behind them for the
-  # life of the consumer; there is no point nacking, since redelivery cannot fix
-  # a partial payload or a failed checksum.
+  # Dropped entries never reach the acknowledger, and left unacked they would hold the
+  # subscription's cursor for the life of the consumer. Nacking would only redeliver a
+  # payload that is still partial or still corrupt.
   defp discard(entries) do
     Enum.each(entries, fn {msg, consumer_pid, _context} ->
-      case Pulsar.Consumer.ack(consumer_pid, msg.message_id) do
-        :ok -> :ok
-        {:error, reason} -> Logger.error("Failed to ack undeliverable message: #{inspect(reason)}")
-      end
+      Logger.warning("Dropping undeliverable message: #{msg.validation_error || :incomplete_chunked_message}")
+      ack_discarded(consumer_pid, msg)
     end)
+  end
+
+  # Unlike send_flow/3, Pulsar.Consumer.ack/2 exits rather than reporting a dead worker,
+  # and a consumer that restarted while its messages sat in the buffer is routine.
+  defp ack_discarded(consumer_pid, msg) do
+    Pulsar.Consumer.ack(consumer_pid, msg.message_id)
+  catch
+    :exit, reason -> Logger.error("Failed to ack undeliverable message: #{inspect(reason)}")
   end
 
   # Returns a map of topic => broker_message_count for the given buffer entries,
@@ -486,14 +481,12 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  # Without this, an unstarted client surfaces as a :noproc exit from deep inside the
-  # client's supervisor when the first consumer is started.
+  # Otherwise this surfaces as a :noproc exit from inside the client's supervisor when
+  # the first consumer is started.
   defp ensure_client_running!(client) do
     if is_nil(Process.whereis(client)) do
       raise ArgumentError, """
-      Pulsar client #{inspect(client)} is not running.
-
-      Supervise it above the pipeline:
+      Pulsar client #{inspect(client)} is not running. Supervise it above the pipeline:
 
           children = [
             {Pulsar.Client, name: #{inspect(client)}, host: "pulsar://localhost:6650"},

@@ -25,13 +25,10 @@ defmodule OffBroadway.Pulsar.Consumer do
     {:noreply, state}
   end
 
-  # The default implementation acks and drops, which would hide the message from the
-  # producer entirely — and the broker charged a permit for it. Forwarding it keeps the
-  # permit window accurate; the producer drops it before the pipeline and acks it.
+  # The default acks and drops, hiding from the producer a message the broker charged a
+  # permit for. The producer needs to see it to keep the permit window accurate.
   @impl true
-  def handle_invalid_message(%Pulsar.Message{} = message, state) do
-    handle_message(message, state)
-  end
+  def handle_invalid_message(message, state), do: handle_message(message, state)
 
   @impl true
   def became_active(state) do
