@@ -6,8 +6,9 @@ defmodule OffBroadway.Pulsar.Consumer do
 
   @impl true
   def init([broadway_producer, active_state_callback], context) do
-    # Asks the producer for the initial flow, on first start and on every restart. The
-    # context is its per-consumer key and the origin it stamps on each Broadway message.
+    # Registers this worker with the producer, on first start and on every restart. self()
+    # is the key permits are accounted against; the context is the origin stamped on each
+    # Broadway message.
     send(broadway_producer, {:consumer_ready, self(), context})
 
     {:ok,
@@ -33,14 +34,21 @@ defmodule OffBroadway.Pulsar.Consumer do
   @impl true
   def handle_invalid_message(message, state), do: drop(message, state)
 
-  # `:ok` hands the ack to the worker, whose own ack carries the validation error that
-  # Pulsar.Consumer.ack/2 cannot. The producer hears about it only to take the permit the
-  # broker charged off its window, which nothing else would.
-  defp drop(message, state) do
-    permits = Pulsar.Message.num_broker_messages(message)
+  # Flow policy, configured as {__MODULE__, :report_permits, [broadway_producer]}. Reports
+  # rather than grants: the producer refills as Broadway consumes, which is what stops the
+  # broker running further ahead than the pipeline has asked for.
+  def report_permits(%{consumed: 0}, _broadway_producer), do: :ok
 
+  def report_permits(%{consumed: consumed}, broadway_producer) do
+    send(broadway_producer, {:permits_consumed, self(), consumed})
+    :ok
+  end
+
+  # `:ok` hands the ack to the worker, whose own ack carries the validation error that
+  # Pulsar.Consumer.ack/2 cannot. The permits it cost need no reporting here — the flow
+  # policy is asked for every delivery, whether or not a callback saw it.
+  defp drop(message, state) do
     Logger.warning("Dropping undeliverable message: #{message.validation_error || :incomplete_chunked_message}")
-    send(state.broadway_producer, {:permits_consumed, state.context, permits})
 
     {:ok, state}
   end

@@ -48,6 +48,23 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
   end
 
+  describe ":consumer_ready" do
+    test "registers the worker with the window it granted itself" do
+      assert {:noreply, [], new_state} =
+               Producer.handle_info({:consumer_ready, self(), @context}, %{state() | consumers: %{}})
+
+      pid = self()
+      assert %{^pid => {"topic", 10}} = new_state.consumers
+    end
+
+    test "forgets a worker that goes down, so no refill is sent to it" do
+      assert {:noreply, [], new_state} =
+               Producer.handle_info({:DOWN, make_ref(), :process, self(), :killed}, state())
+
+      assert new_state.consumers == %{}
+    end
+  end
+
   describe "dispatch" do
     test "wraps a message and leaves it for the acknowledger" do
       assert {:noreply, [%Message{data: "ok", metadata: metadata}], new_state} =
@@ -56,12 +73,13 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       assert metadata.message_id_string == "1:2:-1"
       assert metadata.topic == "topic"
       assert new_state.buffer == []
-      # One broker message, so one permit off the window of 10.
-      assert %{"topic" => {_pid, 9}} = new_state.consumers
+      # Nothing is charged until the flow policy reports what the delivery cost.
+      pid = self()
+      assert %{^pid => {"topic", 10}} = new_state.consumers
     end
 
     test "dispatches up to demand and buffers the rest" do
-      buffer = for _ <- 1..3, do: {@message, self(), @context}
+      buffer = for _ <- 1..3, do: {:message, @message, self(), @context}
       state = %{state() | buffer: buffer, demand: 0}
 
       assert {:noreply, dispatched, new_state} = Producer.handle_demand(2, state)
@@ -69,33 +87,57 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       assert length(dispatched) == 2
       assert length(new_state.buffer) == 1
       assert new_state.demand == 0
-      # Only the dispatched two are counted; the buffered one has not been handed on yet.
-      assert %{"topic" => {_pid, 8}} = new_state.consumers
     end
   end
 
   describe ":permits_consumed" do
-    test "takes a dropped message off the window without dispatching anything" do
-      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, @context, 2}, state())
+    test "charges the window only once Broadway has taken the delivery's messages" do
+      state = %{state() | demand: 1}
 
-      assert %{"topic" => {_pid, 8}} = new_state.consumers
+      # Two messages and the marker for the delivery that carried them, but demand for one.
+      buffer = [
+        {:message, @message, self(), @context},
+        {:message, @message, self(), @context},
+        {:permits, self(), 2}
+      ]
+
+      assert {:noreply, [_one], held} = Producer.handle_demand(0, %{state | buffer: buffer})
+
+      pid = self()
+      assert %{^pid => {"topic", 10}} = held.consumers
+      assert [{:message, _, _, _}, {:permits, _, 2}] = held.buffer
+
+      assert {:noreply, [_two], charged} = Producer.handle_demand(1, held)
+
+      assert %{^pid => {"topic", 8}} = charged.consumers
+      assert charged.buffer == []
+    end
+
+    test "charges a delivery no callback saw without waiting for demand" do
+      state = %{state() | demand: 0}
+
+      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, self(), 2}, state)
+
+      pid = self()
+      assert %{^pid => {"topic", 8}} = new_state.consumers
+      assert new_state.buffer == []
     end
 
     test "refills once the window falls to the threshold" do
       {:ok, consumer} = start_supervised({StubConsumer, self()})
-      state = %{state() | consumers: %{"topic" => {consumer, 3}}, flow_threshold: 2, flow_refill: 5}
+      state = %{state() | consumers: %{consumer => {"topic", 3}}, flow_threshold: 2, flow_refill: 5}
 
-      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, @context, 1}, state)
+      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, consumer, 1}, state)
 
       # 3 - 1 = 2, at the threshold, so a refill of 5 follows.
       assert_receive {:send_flow, 5}
-      assert %{"topic" => {^consumer, 7}} = new_state.consumers
+      assert %{^consumer => {"topic", 7}} = new_state.consumers
     end
   end
 
   defp state do
     %{
-      consumers: %{"topic" => {self(), 10}},
+      consumers: %{self() => {"topic", 10}},
       demand: 10,
       buffer: [],
       flow_initial: 10,

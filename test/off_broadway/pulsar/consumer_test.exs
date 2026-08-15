@@ -26,7 +26,7 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
       assert consumer_pid == self()
     end
 
-    test "drops an incomplete chunked message, reporting the permits it cost" do
+    test "drops an incomplete chunked message" do
       state = active_state_callback_state()
 
       message = %Pulsar.Message{
@@ -37,20 +37,33 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
       # :ok, so the worker acks it rather than the producer.
       assert Consumer.handle_message(message, state) == {:ok, state}
 
-      assert_receive {:permits_consumed, %{topic: "my-topic"}, 2}
       refute_receive {:pulsar_message, _, _, _}
     end
   end
 
   describe "handle_invalid_message/2" do
-    test "drops the message, reporting the permit it cost" do
+    test "drops the message" do
       state = active_state_callback_state()
       message = %Pulsar.Message{payload: "corrupt", validation_error: :checksum_mismatch}
 
       assert Consumer.handle_invalid_message(message, state) == {:ok, state}
 
-      assert_receive {:permits_consumed, %{topic: "my-topic"}, 1}
       refute_receive {:pulsar_message, _, _, _}
+    end
+  end
+
+  describe "report_permits/2" do
+    test "reports what a delivery cost, keyed by the worker" do
+      assert Consumer.report_permits(%{consumed: 3, outstanding: 7}, self()) == :ok
+
+      assert_receive {:permits_consumed, consumer_pid, 3}
+      assert consumer_pid == self()
+    end
+
+    test "stays quiet when a delivery cost nothing" do
+      assert Consumer.report_permits(%{consumed: 0, outstanding: 10}, self()) == :ok
+
+      refute_receive {:permits_consumed, _, _}
     end
   end
 

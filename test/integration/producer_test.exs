@@ -186,6 +186,50 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     assert_receive {:pulsar_message, ^msg_data}, 10_000
   end
 
+  test "a wholly dead-lettered backlog keeps draining past the permit window" do
+    # A diverted delivery reaches no callback, so only the consumer's flow policy can
+    # report what the broker charged for it. Miscount those and the window drifts up
+    # until it never falls to the threshold again, and the subscription stops with no
+    # crash and no log — the failure this producer's manual flow control is exposed to.
+    dlq_topic = "persistent://public/default/broadway-permit-drain-dlq"
+    flow_initial = 5
+
+    {:ok, _dlq_consumer} =
+      Pulsar.Consumer.start(dlq_topic, "permit-drain-dlq-consumer", DummyConsumer,
+        client: @client,
+        initial_position: :earliest,
+        init_args: [self()]
+      )
+
+    {:ok, _broadway} =
+      DummyPipeline.start_link(
+        test_pid: self(),
+        topic: @topic,
+        subscription: "permit-drain-sub",
+        client: @client,
+        handler: :nack,
+        name: :permit_drain_pipeline,
+        flow_initial: flow_initial,
+        flow_threshold: 2,
+        flow_refill: flow_initial,
+        consumer_opts: [
+          initial_position: :earliest,
+          redelivery_interval: 200,
+          dead_letter_policy: [max_redelivery: 1, topic: dlq_topic]
+        ]
+      )
+
+    # Comfortably more than one window, so nothing but a window that keeps being
+    # refilled gets this far.
+    diverted =
+      for _ <- 1..(flow_initial * 4) do
+        assert_receive {:pulsar_message, data}, 15_000
+        data
+      end
+
+    assert length(Enum.uniq(diverted)) == length(diverted)
+  end
+
   test "message metadata is preserved" do
     {:ok, _broadway} =
       DummyPipeline.start_link(

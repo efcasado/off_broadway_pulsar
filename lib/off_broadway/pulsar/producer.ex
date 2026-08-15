@@ -16,12 +16,14 @@ defmodule OffBroadway.Pulsar.Producer do
   use GenStage
 
   alias Broadway.Message
+  # Aliased for its role, so it does not read as Pulsar.Consumer, which this file also calls.
+  alias OffBroadway.Pulsar.Consumer, as: Callback
 
   require Logger
 
   # Excludes :consumer_count, whose extra workers would all report the same resolved
   # topic and corrupt permit accounting, and the :flow_* options, which this producer
-  # replaces by forcing flow_initial: 0.
+  # sets from its own configuration.
   @supported_consumer_opts [
     :subscription_type,
     :initial_position,
@@ -100,19 +102,18 @@ defmodule OffBroadway.Pulsar.Producer do
   The producer uses Pulsar's native permit window flow control. These options
   match the naming convention used in `pulsar-elixir` consumer:
 
-  - `:flow_initial` - Initial permits requested at startup (optional, default: 100)
-  - `:flow_threshold` - Trigger refill when permits drop to this level (optional, default: 50)
-  - `:flow_refill` - Number of permits to request on each refill (optional, default: 50)
+  - `:flow_initial` - Permits each consumer grants when it subscribes (optional, default: 100)
+  - `:flow_threshold` - Refill once outstanding permits reach this level (optional, default: 50)
+  - `:flow_refill` - Permits granted by each refill (optional, default: 50)
 
-  Note: These flow control options are for the Broadway producer level and override
-  the consumer's automatic flow control (which is disabled by setting `flow_initial: 0`
-  in the underlying consumer).
+  These replace the consumer's own automatic refills: the producer sets the consumer's
+  `:flow_policy` to report what each delivery cost and grants the refills itself, so the
+  broker runs no further ahead than Broadway has asked for. Processor demand is served from
+  the window already granted, rather than triggering a flow request of its own.
 
-  Broadway processor demands are satisfied from the already-requested permit window,
-  eliminating per-demand flow requests.
-
-  When using `producer: [concurrency: N]` with N > 1, each producer maintains
-  its own independent permit window.
+  Each consumer keeps its own window — one per topic, and one per partition of a
+  partitioned topic. With `producer: [concurrency: N]`, each producer has its own
+  consumers, and so its own windows.
 
   ## Message Metadata
 
@@ -256,12 +257,18 @@ defmodule OffBroadway.Pulsar.Producer do
             "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
     end
 
+    # Each worker grants its own initial window on subscribe, so restarts and
+    # late-discovered partitions come back with permits rather than waiting to be given
+    # any. Refills are this producer's, driven by what Broadway takes.
     consumer_opts_base =
       opts
       |> Keyword.get(:consumer_opts, @default_consumer_opts)
       |> Keyword.take(@supported_consumer_opts)
-      |> Keyword.put(:flow_initial, 0)
-      |> Keyword.put(:client, client)
+      |> Keyword.merge(
+        client: client,
+        flow_initial: flow_initial,
+        flow_policy: {Callback, :report_permits, [self()]}
+      )
 
     # Start one consumer per topic. Each gets a unique name to support both
     # multi-topic and producer concurrency > 1. They run under the client's
@@ -273,7 +280,7 @@ defmodule OffBroadway.Pulsar.Producer do
         Keyword.merge(consumer_opts_base,
           topic: topic,
           subscription_name: subscription,
-          callback_module: OffBroadway.Pulsar.Consumer,
+          callback_module: Callback,
           name: unique_name,
           init_args: [self(), active_state_callback]
         )
@@ -282,13 +289,13 @@ defmodule OffBroadway.Pulsar.Producer do
     end)
 
     state = %{
-      # topic => {consumer_pid, outstanding_permits}, populated via :consumer_ready.
-      # Keyed by resolved topic rather than PID so a restarted consumer overwrites
-      # its entry instead of leaving a stale one behind.
+      # consumer_pid => {topic, outstanding_permits}, populated via :consumer_ready.
+      # Permits belong to a worker instance, so the worker is the key; the topic is
+      # carried alongside for logging. Entries are dropped when the worker goes down.
       consumers: %{},
       demand: 0,
-      # {%Pulsar.Message{}, consumer_pid, context} triples: consumer_pid routes
-      # ACKs/NACKs, context.topic routes flow-permit accounting.
+      # An ordered mix of {:message, %Pulsar.Message{}, consumer_pid, context} and
+      # {:permits, consumer_pid, consumed} markers. See take_dispatchable/3.
       buffer: [],
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
@@ -309,86 +316,74 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def handle_info({:consumer_ready, consumer_pid, %{topic: topic}}, state) do
-    Logger.debug(
-      "Consumer #{inspect(consumer_pid)} is ready for topic #{topic}, sending initial flow of #{state.flow_initial} permits"
-    )
+    Logger.debug("Consumer #{inspect(consumer_pid)} is ready for topic #{topic} with #{state.flow_initial} permits")
 
-    case Pulsar.Consumer.send_flow(consumer_pid, state.flow_initial) do
-      :ok ->
-        Logger.debug("Sent initial flow of #{state.flow_initial} permits to consumer #{inspect(consumer_pid)}")
+    Process.monitor(consumer_pid)
+    consumers = Map.put(state.consumers, consumer_pid, {topic, state.flow_initial})
 
-        # Keying by topic means a restarted consumer simply overwrites the old
-        # entry. The stale PID is discarded automatically — no leak.
-        consumers = Map.put(state.consumers, topic, {consumer_pid, state.flow_initial})
-        {:noreply, [], %{state | consumers: consumers}}
-
-      {:error, reason} ->
-        Logger.error("Failed to send initial flow to consumer #{inspect(consumer_pid)}: #{inspect(reason)}")
-
-        # Don't crash producer, consumer will retry or supervisor will handle it
-        {:noreply, [], state}
-    end
+    {:noreply, [], %{state | consumers: consumers}}
   end
 
   def handle_info({:pulsar_message, message_info, consumer_pid, context}, state) do
-    new_buffer = state.buffer ++ [{message_info, consumer_pid, context}]
+    new_buffer = state.buffer ++ [{:message, message_info, consumer_pid, context}]
     Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
 
     dispatch_messages(%{state | buffer: new_buffer})
   end
 
-  # The consumer dropped a message instead of forwarding it, so nothing else will take
-  # the permits it cost off the window.
-  def handle_info({:permits_consumed, %{topic: topic}, count}, state) do
-    state =
-      state
-      |> decrement_permits(%{topic => count})
-      |> maybe_refill_flow()
-
-    {:noreply, [], state}
+  # What the delivery cost the window, reported by the flow policy after its messages.
+  def handle_info({:permits_consumed, consumer_pid, consumed}, state) do
+    dispatch_messages(%{state | buffer: state.buffer ++ [{:permits, consumer_pid, consumed}]})
   end
 
-  defp dispatch_messages(%{demand: 0} = state) do
-    {:noreply, [], state}
-  end
-
-  defp dispatch_messages(%{buffer: [], demand: demand} = state) do
-    {:noreply, [], %{state | demand: demand}}
+  def handle_info({:DOWN, _ref, :process, consumer_pid, _reason}, state) do
+    # A replacement announces itself with a new PID, so the entry would otherwise linger
+    # and every refill would be sent to a dead worker.
+    {:noreply, [], %{state | consumers: Map.delete(state.consumers, consumer_pid)}}
   end
 
   defp dispatch_messages(%{buffer: buffer, demand: demand} = state) do
-    {to_dispatch, remaining} = Enum.split(buffer, demand)
+    {taken, remaining} = take_dispatchable(buffer, demand)
+    broadway_messages = for {:message, msg, pid, context} <- taken, do: wrap_message(msg, pid, context)
 
-    broadway_messages = Enum.map(to_dispatch, fn {msg, pid, context} -> wrap_message(msg, pid, context) end)
-    Logger.debug("Dispatching #{length(to_dispatch)} messages, #{length(remaining)} remaining in buffer")
+    Logger.debug("Dispatching #{length(broadway_messages)} messages, #{length(remaining)} remaining in buffer")
 
     state =
-      %{state | buffer: remaining, demand: demand - length(to_dispatch)}
-      |> decrement_permits(permits_consumed(to_dispatch))
+      %{state | buffer: remaining, demand: demand - length(broadway_messages)}
+      |> charge_permits(taken)
       |> maybe_refill_flow()
 
     {:noreply, broadway_messages, state}
   end
 
-  defp decrement_permits(state, consumed) do
+  # Takes what demand allows, plus the markers those messages have caught up with. A marker
+  # trails the delivery it paid for, so charging only what comes off the buffer keeps the
+  # window in step with Broadway rather than with the broker — which is what bounds the
+  # buffer. A delivery that produced no messages at all, wholly dead-lettered or skipped,
+  # leaves a marker with nothing in front of it and is charged on the next pass.
+  defp take_dispatchable(buffer, demand, taken \\ [])
+
+  defp take_dispatchable([{:permits, _, _} = marker | rest], demand, taken) do
+    take_dispatchable(rest, demand, [marker | taken])
+  end
+
+  defp take_dispatchable([{:message, _, _, _} = message | rest], demand, taken) when demand > 0 do
+    take_dispatchable(rest, demand - 1, [message | taken])
+  end
+
+  defp take_dispatchable(buffer, _demand, taken), do: {Enum.reverse(taken), buffer}
+
+  defp charge_permits(state, taken) do
     consumers =
-      Enum.reduce(consumed, state.consumers, fn {topic, count}, acc ->
-        Map.update(acc, topic, {nil, 0}, fn {pid, outstanding} ->
-          {pid, max(outstanding - count, 0)}
-        end)
+      Enum.reduce(taken, state.consumers, fn
+        {:permits, pid, consumed}, acc ->
+          Map.replace_lazy(acc, pid, fn {topic, outstanding} -> {topic, max(outstanding - consumed, 0)} end)
+
+        {:message, _, _, _}, acc ->
+          acc
       end)
 
     %{state | consumers: consumers}
-  end
-
-  # topic => broker message count, since one entry can be several broker messages.
-  defp permits_consumed(entries) do
-    entries
-    |> Enum.group_by(fn {_msg, _pid, context} -> context.topic end)
-    |> Map.new(fn {topic, items} ->
-      count = Enum.sum(Enum.map(items, fn {msg, _, _} -> Pulsar.Message.num_broker_messages(msg) end))
-      {topic, count}
-    end)
   end
 
   defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer, context) do
@@ -414,13 +409,13 @@ defmodule OffBroadway.Pulsar.Producer do
     }
   end
 
-  # Checks each topic's consumer independently and refills its permit window
-  # if it has dropped below the threshold.
+  # Checks each consumer independently and refills its permit window if it has
+  # dropped to the threshold.
   defp maybe_refill_flow(state) do
     consumers =
-      Enum.reduce(state.consumers, state.consumers, fn {topic, {pid, outstanding}}, acc ->
+      Enum.reduce(state.consumers, state.consumers, fn {pid, {topic, outstanding}}, acc ->
         if outstanding <= state.flow_threshold do
-          refill_consumer(acc, topic, pid, outstanding, state.flow_refill)
+          refill_consumer(acc, pid, topic, outstanding, state.flow_refill)
         else
           acc
         end
@@ -429,7 +424,7 @@ defmodule OffBroadway.Pulsar.Producer do
     %{state | consumers: consumers}
   end
 
-  defp refill_consumer(consumers, topic, pid, outstanding, refill_amount) do
+  defp refill_consumer(consumers, pid, topic, outstanding, refill_amount) do
     case Pulsar.Consumer.send_flow(pid, refill_amount) do
       :ok ->
         new_outstanding = outstanding + refill_amount
@@ -439,7 +434,7 @@ defmodule OffBroadway.Pulsar.Producer do
             "(outstanding: #{outstanding} → #{new_outstanding})"
         )
 
-        Map.put(consumers, topic, {pid, new_outstanding})
+        Map.put(consumers, pid, {topic, new_outstanding})
 
       {:error, reason} ->
         Logger.error("Failed to refill flow window for #{topic}: #{inspect(reason)}")
