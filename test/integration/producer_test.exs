@@ -215,7 +215,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         ]
       )
 
-    # Several windows' worth, so only a window that keeps being refilled gets this far.
     diverted =
       for _ <- 1..(flow_initial * 4) do
         assert_receive {:pulsar_message, data}, 15_000

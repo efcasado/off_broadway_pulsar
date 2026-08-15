@@ -126,7 +126,6 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, consumer, 1}, state)
 
-      # 3 - 1 = 2, at the threshold, so a refill of 5 follows.
       assert_receive {:send_flow, 5}
       assert %{^consumer => {"topic", 7}} = new_state.consumers
     end
@@ -138,8 +137,6 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       demand: 10,
       buffer: [],
       flow_initial: 10,
-      # Below the outstanding count, so no refill fires and a test observes the
-      # decrement rather than a refill on top of it.
       flow_threshold: 2,
       flow_refill: 5
     }

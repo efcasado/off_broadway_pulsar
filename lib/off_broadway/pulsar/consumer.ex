@@ -6,9 +6,7 @@ defmodule OffBroadway.Pulsar.Consumer do
 
   @impl true
   def init([broadway_producer, active_state_callback], context) do
-    # Registers this worker with the producer, on first start and on every restart. self()
-    # is the key permits are accounted against; the context is the origin stamped on each
-    # Broadway message.
+    # The worker PID identifies its permit window; context supplies message metadata.
     send(broadway_producer, {:consumer_ready, self(), context})
 
     {:ok,
@@ -22,8 +20,6 @@ defmodule OffBroadway.Pulsar.Consumer do
   @impl true
   def handle_message(%Pulsar.Message{} = message, state) do
     if Pulsar.Message.complete?(message) do
-      # self() is the PID the acknowledger acks to; :noreply leaves the message
-      # unacknowledged until Broadway gets there.
       send(state.broadway_producer, {:pulsar_message, message, self(), state.context})
       {:noreply, state}
     else
@@ -44,9 +40,8 @@ defmodule OffBroadway.Pulsar.Consumer do
     :ok
   end
 
-  # `:ok` hands the ack to the worker, whose own ack carries the validation error that
-  # Pulsar.Consumer.ack/2 cannot. The permits it cost need no reporting here — the flow
-  # policy is asked for every delivery, whether or not a callback saw it.
+  # Let the worker ACK so validation errors are preserved; the flow policy accounts for
+  # the permit separately.
   defp drop(message, state) do
     Logger.warning("Dropping undeliverable message: #{message.validation_error || :incomplete_chunked_message}")
 

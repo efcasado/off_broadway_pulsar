@@ -16,14 +16,10 @@ defmodule OffBroadway.Pulsar.Producer do
   use GenStage
 
   alias Broadway.Message
-  # Aliased for its role, so it does not read as the Pulsar.Consumer this file also calls.
   alias OffBroadway.Pulsar.Consumer, as: Callback
 
   require Logger
 
-  # Excludes :consumer_count, whose extra workers would all report the same resolved
-  # topic and corrupt permit accounting, and the :flow_* options, which this producer
-  # sets from its own configuration.
   @supported_consumer_opts [
     :subscription_type,
     :initial_position,
@@ -227,9 +223,8 @@ defmodule OffBroadway.Pulsar.Producer do
 
     ensure_client_running!(client)
 
-    # Everything that can raise runs before the first consumer is started: a raise
-    # afterwards would leave that consumer running under the client while Broadway
-    # retries init/1, leaking another one on every attempt.
+    # Validate flow options before starting consumers; failed init retries would
+    # otherwise leak client-supervised consumers.
     flow_initial =
       opts
       |> Keyword.get(:flow_initial, @default_flow_initial)
@@ -321,7 +316,6 @@ defmodule OffBroadway.Pulsar.Producer do
     dispatch_messages(%{state | buffer: new_buffer})
   end
 
-  # What the delivery cost the window, reported by the flow policy after its messages.
   def handle_info({:permits_consumed, consumer_pid, consumed}, state) do
     dispatch_messages(%{state | buffer: state.buffer ++ [{:permits, consumer_pid, consumed}]})
   end
@@ -346,10 +340,9 @@ defmodule OffBroadway.Pulsar.Producer do
     {:noreply, broadway_messages, state}
   end
 
-  # A marker trails the delivery it paid for, so charging it on the way out of the buffer
-  # keeps the window in step with Broadway rather than with the broker — which is what
-  # bounds the buffer. Markers come off whatever the demand: nothing queued ahead of one
-  # means its delivery has been handed on, or never had anything to hand on.
+  # Permit markers follow all messages from the same broker delivery. Charge the delivery
+  # only after those messages leave the buffer; a leading marker represents a delivery
+  # that produced no Broadway messages.
   defp take_dispatchable(buffer, demand, taken \\ [])
 
   defp take_dispatchable([{:permits, _, _} = marker | rest], demand, taken) do
@@ -429,8 +422,6 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  # Pulsar.Consumer.start/1 answers {:error, :client_not_found}, so without this the
-  # first sign of a missing client is a MatchError on that tuple.
   defp ensure_client_running!(client) when is_atom(client) do
     if is_nil(Process.whereis(client)) do
       raise ArgumentError, """

@@ -74,8 +74,6 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
 
     assert :ok = wait_for_partition_count(producer_pid, @expanded_partitions)
 
-    # The consumer's discovery poller will start consumers for the new partitions
-    # within @discovery_interval_ms, draining any backlogged messages.
     new_count = @expanded_partitions * @messages_per_partition
 
     for i <- 1..new_count do
