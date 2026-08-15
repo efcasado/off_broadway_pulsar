@@ -23,12 +23,12 @@ defmodule OffBroadway.Pulsar.Consumer do
       send(state.broadway_producer, {:pulsar_message, message, self(), state.context})
       {:noreply, state}
     else
-      drop(message, state)
+      # :ok hands the ack to the worker; left unacked it would hold the subscription's cursor.
+      Logger.warning("Discarding incomplete chunked message")
+
+      {:ok, state}
     end
   end
-
-  @impl true
-  def handle_invalid_message(message, state), do: drop(message, state)
 
   # Flow policy, configured as {__MODULE__, :report_permits, [broadway_producer]}. Reports
   # rather than grants: the producer refills as Broadway consumes, which is what stops the
@@ -38,14 +38,6 @@ defmodule OffBroadway.Pulsar.Consumer do
   def report_permits(%{consumed: consumed}, broadway_producer) do
     send(broadway_producer, {:permits_consumed, self(), consumed})
     :ok
-  end
-
-  # Let the worker ACK so validation errors are preserved; the flow policy accounts for
-  # the permit separately.
-  defp drop(message, state) do
-    Logger.warning("Dropping undeliverable message: #{message.validation_error || :incomplete_chunked_message}")
-
-    {:ok, state}
   end
 
   @impl true

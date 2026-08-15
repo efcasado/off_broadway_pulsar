@@ -41,17 +41,6 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
     end
   end
 
-  describe "handle_invalid_message/2" do
-    test "drops the message" do
-      state = active_state_callback_state()
-      message = %Pulsar.Message{payload: "corrupt", validation_error: :checksum_mismatch}
-
-      assert Consumer.handle_invalid_message(message, state) == {:ok, state}
-
-      refute_receive {:pulsar_message, _, _, _}
-    end
-  end
-
   describe "report_permits/2" do
     test "reports what a delivery cost, keyed by the worker" do
       assert Consumer.report_permits(%{consumed: 3, outstanding: 7}, self()) == :ok
