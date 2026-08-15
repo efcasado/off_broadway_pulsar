@@ -70,14 +70,10 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
       assert_receive {:message_handled, %Broadway.Message{}, _}, 10_000
     end
 
-    # Expand the topic and wait for the producer to discover the new partitions.
     :ok = System.update_partitions(topic, @expanded_partitions)
 
     assert :ok = wait_for_partition_count(producer_pid, @expanded_partitions)
 
-    # Produce to all partitions including the new ones. The keys are spread
-    # across a wide range so the producer's hashing scheme distributes them
-    # across all 4 partitions.
     # The consumer's discovery poller will start consumers for the new partitions
     # within @discovery_interval_ms, draining any backlogged messages.
     new_count = @expanded_partitions * @messages_per_partition

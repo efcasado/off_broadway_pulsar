@@ -11,7 +11,6 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
     producer_concurrency = Keyword.get(opts, :producer_concurrency, 1)
     processor_concurrency = Keyword.get(opts, :processor_concurrency, 1)
 
-    # Support both :topic (single, backwards-compatible) and :topics (list).
     topic_config =
       if Keyword.has_key?(opts, :topics) do
         [topics: Keyword.fetch!(opts, :topics)]

@@ -92,23 +92,20 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
   describe ":permits_consumed" do
     test "charges the window only once Broadway has taken the delivery's messages" do
-      state = %{state() | demand: 1}
-
-      # Two messages and the marker for the delivery that carried them, but demand for one.
+      # One delivery: two messages, then the marker saying what the broker charged for it.
       buffer = [
         {:message, @message, self(), @context},
         {:message, @message, self(), @context},
         {:permits, self(), 2}
       ]
 
-      assert {:noreply, [_one], held} = Producer.handle_demand(0, %{state | buffer: buffer})
-
       pid = self()
+
+      assert {:noreply, [_first], held} = Producer.handle_demand(1, %{state() | buffer: buffer, demand: 0})
       assert %{^pid => {"topic", 10}} = held.consumers
       assert [{:message, _, _, _}, {:permits, _, 2}] = held.buffer
 
-      assert {:noreply, [_two], charged} = Producer.handle_demand(1, held)
-
+      assert {:noreply, [_second], charged} = Producer.handle_demand(1, held)
       assert %{^pid => {"topic", 8}} = charged.consumers
       assert charged.buffer == []
     end

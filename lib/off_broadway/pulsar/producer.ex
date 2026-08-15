@@ -16,7 +16,7 @@ defmodule OffBroadway.Pulsar.Producer do
   use GenStage
 
   alias Broadway.Message
-  # Aliased for its role, so it does not read as Pulsar.Consumer, which this file also calls.
+  # Aliased for its role, so it does not read as the Pulsar.Consumer this file also calls.
   alias OffBroadway.Pulsar.Consumer, as: Callback
 
   require Logger
@@ -48,7 +48,6 @@ defmodule OffBroadway.Pulsar.Producer do
     subscription_type: :shared
   ]
 
-  # Flow control defaults - matches pulsar-elixir naming convention
   @default_flow_initial 100
   @default_flow_threshold 50
   @default_flow_refill 50
@@ -98,9 +97,6 @@ defmodule OffBroadway.Pulsar.Producer do
   The total consumer startup delay is `startup_delay_ms + random(0, startup_jitter_ms)`, applied on every consumer start/restart.
 
   ## Flow Control Options
-
-  The producer uses Pulsar's native permit window flow control. These options
-  match the naming convention used in `pulsar-elixir` consumer:
 
   - `:flow_initial` - Permits each consumer grants when it subscribes (optional, default: 100)
   - `:flow_threshold` - Refill once outstanding permits reach this level (optional, default: 50)
@@ -212,8 +208,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def init(opts) do
-    # Accept either :topic (single, backwards-compatible) or :topics (list).
-    # Both are normalized to a list internally.
     topics =
       cond do
         Keyword.has_key?(opts, :topics) ->
@@ -251,7 +245,6 @@ defmodule OffBroadway.Pulsar.Producer do
       |> Keyword.get(:flow_refill, @default_flow_refill)
       |> validate_positive_integer!(:flow_refill)
 
-    # Validate threshold < initial (otherwise refill never triggers)
     if flow_threshold >= flow_initial do
       raise ArgumentError,
             "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
@@ -270,9 +263,8 @@ defmodule OffBroadway.Pulsar.Producer do
         flow_policy: {Callback, :report_permits, [self()]}
       )
 
-    # Start one consumer per topic. Each gets a unique name to support both
-    # multi-topic and producer concurrency > 1. They run under the client's
-    # supervisor, not under this producer.
+    # The unique name keeps multi-topic and producer concurrency > 1 apart. Consumers run
+    # under the client's supervisor, not under this producer.
     Enum.each(topics, fn topic ->
       unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
 
@@ -290,8 +282,8 @@ defmodule OffBroadway.Pulsar.Producer do
 
     state = %{
       # consumer_pid => {topic, outstanding_permits}, populated via :consumer_ready.
-      # Permits belong to a worker instance, so the worker is the key; the topic is
-      # carried alongside for logging. Entries are dropped when the worker goes down.
+      # Permits belong to a worker instance, so the worker is the key; the topic only
+      # rides along for logging.
       consumers: %{},
       demand: 0,
       # An ordered mix of {:message, %Pulsar.Message{}, consumer_pid, context} and
@@ -307,8 +299,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def handle_demand(incoming_demand, state) do
-    # With permit window, demand doesn't trigger flow requests
-    # Permits are already requested proactively - just track demand
     new_demand = state.demand + incoming_demand
     Logger.debug("Received demand #{incoming_demand}, total demand: #{new_demand}, buffer: #{length(state.buffer)}")
     dispatch_messages(%{state | demand: new_demand})
@@ -356,11 +346,10 @@ defmodule OffBroadway.Pulsar.Producer do
     {:noreply, broadway_messages, state}
   end
 
-  # Takes what demand allows, plus the markers those messages have caught up with. A marker
-  # trails the delivery it paid for, so charging only what comes off the buffer keeps the
-  # window in step with Broadway rather than with the broker — which is what bounds the
-  # buffer. A delivery that produced no messages at all, wholly dead-lettered or skipped,
-  # leaves a marker with nothing in front of it and is charged on the next pass.
+  # A marker trails the delivery it paid for, so charging it on the way out of the buffer
+  # keeps the window in step with Broadway rather than with the broker — which is what
+  # bounds the buffer. Markers come off whatever the demand: nothing queued ahead of one
+  # means its delivery has been handed on, or never had anything to hand on.
   defp take_dispatchable(buffer, demand, taken \\ [])
 
   defp take_dispatchable([{:permits, _, _} = marker | rest], demand, taken) do
@@ -409,8 +398,6 @@ defmodule OffBroadway.Pulsar.Producer do
     }
   end
 
-  # Checks each consumer independently and refills its permit window if it has
-  # dropped to the threshold.
   defp maybe_refill_flow(state) do
     consumers =
       Enum.reduce(state.consumers, state.consumers, fn {pid, {topic, outstanding}}, acc ->
@@ -457,7 +444,6 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  # Validation helpers
   defp validate_positive_integer!(value, _name) when is_integer(value) and value > 0, do: value
 
   defp validate_positive_integer!(value, name) do

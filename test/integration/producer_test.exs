@@ -40,7 +40,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     # {:error, :not_ready}.
     :ok = Pulsar.Producer.await_ready(producer)
 
-    # Produce messages with partition_key and ordering_key
     for i <- 1..@message_count do
       {:ok, _msg_id} =
         Pulsar.Producer.send(producer, "Message #{i}",
@@ -50,8 +49,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         )
     end
 
-    # Produce messages to the two multi-topic test topics.
-    # Each message payload encodes its source topic for assertion purposes.
     {:ok, producer_a} =
       Pulsar.Producer.start_link(topic: @topic_a, client: @client, name: :test_producer_a)
 
@@ -187,10 +184,9 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   end
 
   test "a wholly dead-lettered backlog keeps draining past the permit window" do
-    # A diverted delivery reaches no callback, so only the consumer's flow policy can
-    # report what the broker charged for it. Miscount those and the window drifts up
-    # until it never falls to the threshold again, and the subscription stops with no
-    # crash and no log — the failure this producer's manual flow control is exposed to.
+    # A diverted delivery reaches no callback, so only the flow policy can report what the
+    # broker charged for it. Miscount those and the window drifts up until it never reaches
+    # the threshold again, and the subscription stops with no crash and no log.
     dlq_topic = "persistent://public/default/broadway-permit-drain-dlq"
     flow_initial = 5
 
@@ -219,8 +215,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         ]
       )
 
-    # Comfortably more than one window, so nothing but a window that keeps being
-    # refilled gets this far.
+    # Several windows' worth, so only a window that keeps being refilled gets this far.
     diverted =
       for _ <- 1..(flow_initial * 4) do
         assert_receive {:pulsar_message, data}, 15_000
@@ -269,9 +264,8 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   test "messages from multiple topics are all received and acknowledged" do
     total = @multi_topic_message_count * 2
 
-    # flow_initial (5) < @multi_topic_message_count (20) forces each consumer
-    # to go through multiple refill cycles, exercising the per-consumer flow
-    # tracking in maybe_refill_flow/refill_consumer.
+    # flow_initial (5) < @multi_topic_message_count (20), so each consumer has to go
+    # through several refill cycles on its own window.
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
