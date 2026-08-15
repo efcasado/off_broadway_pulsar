@@ -38,8 +38,7 @@ defmodule OffBroadwayPulsar.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger],
-      included_applications: [:pulsar]
+      extra_applications: [:logger]
     ]
   end
 
@@ -47,7 +46,7 @@ defmodule OffBroadwayPulsar.MixProject do
   defp deps do
     [
       {:broadway, "~> 1.2"},
-      {:pulsar, "~> 2.11.0", hex: :pulsar_elixir},
+      {:pulsar, "~> 3.0.0", hex: :pulsar_elixir},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40.0", only: :dev, runtime: false},

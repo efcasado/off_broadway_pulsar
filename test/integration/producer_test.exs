@@ -30,15 +30,20 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
       )
 
     {:ok, producer} =
-      Pulsar.Producer.start_link(@topic,
+      Pulsar.Producer.start_link(
+        topic: @topic,
         client: @client,
         name: :test_producer
       )
 
+    # Producer startup is asynchronous; sending before discovery finishes answers
+    # {:error, :not_ready}.
+    :ok = Pulsar.Producer.await_ready(producer)
+
     # Produce messages with partition_key and ordering_key
     for i <- 1..@message_count do
       {:ok, _msg_id} =
-        Pulsar.Producer.send_message(producer, "Message #{i}",
+        Pulsar.Producer.send(producer, "Message #{i}",
           partition_key: "key-#{rem(i, 10)}",
           ordering_key: "order-#{rem(i, 5)}",
           properties: %{"index" => "#{i}"}
@@ -48,14 +53,17 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     # Produce messages to the two multi-topic test topics.
     # Each message payload encodes its source topic for assertion purposes.
     {:ok, producer_a} =
-      Pulsar.Producer.start_link(@topic_a, client: @client, name: :test_producer_a)
+      Pulsar.Producer.start_link(topic: @topic_a, client: @client, name: :test_producer_a)
 
     {:ok, producer_b} =
-      Pulsar.Producer.start_link(@topic_b, client: @client, name: :test_producer_b)
+      Pulsar.Producer.start_link(topic: @topic_b, client: @client, name: :test_producer_b)
+
+    :ok = Pulsar.Producer.await_ready(producer_a)
+    :ok = Pulsar.Producer.await_ready(producer_b)
 
     for i <- 1..@multi_topic_message_count do
-      {:ok, _} = Pulsar.Producer.send_message(producer_a, "topic-a:#{i}")
-      {:ok, _} = Pulsar.Producer.send_message(producer_b, "topic-b:#{i}")
+      {:ok, _} = Pulsar.Producer.send(producer_a, "topic-a:#{i}")
+      {:ok, _} = Pulsar.Producer.send(producer_b, "topic-b:#{i}")
     end
 
     on_exit(fn ->
@@ -148,7 +156,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
     last_message = List.last(messages)
 
-    assert last_message.metadata.command.redelivery_count == 1
+    assert last_message.metadata.redelivery_count == 1
   end
 
   test "dead letter policy after max redeliveries" do
@@ -175,12 +183,14 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         ]
       )
 
+    # :max_redelivery counts deliveries attempted before diverting, and diverting
+    # replaces delivery rather than accompanying it: handled twice, never a third time.
     assert_receive {:message_handled, %Broadway.Message{data: msg_data}}, 10_000
     assert_receive {:message_handled, %Broadway.Message{data: ^msg_data}}, 5_000
-    assert_receive {:message_handled, %Broadway.Message{data: ^msg_data}}, 5_000
+    refute_receive {:message_handled, %Broadway.Message{data: ^msg_data}}, 2_000
 
     {:ok, _dlq_consumer} =
-      Pulsar.start_consumer(
+      Pulsar.Consumer.start(
         dlq_topic,
         "dlq-consumer",
         DummyConsumer,
@@ -207,11 +217,25 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
     assert_receive {:message_handled, %Broadway.Message{metadata: metadata}, _processor}, 10_000
 
-    pulsar_metadata = metadata.metadata
-    assert pulsar_metadata.partition_key
-    assert pulsar_metadata.producer_name == "test_producer"
+    # @topic is not partitioned, so :topic and :base_topic agree and there is no index.
+    assert metadata.topic == @topic
+    assert metadata.base_topic == @topic
+    assert metadata.partition == nil
+    assert metadata.subscription == "metadata-sub"
 
-    assert Enum.any?(pulsar_metadata.properties, fn prop -> prop.key == "index" end)
+    assert metadata.key =~ ~r/^key-\d$/
+    assert metadata.ordering_key =~ ~r/^order-\d$/
+    assert %{"index" => _} = metadata.properties
+    assert is_integer(metadata.publish_time)
+    assert metadata.event_time == nil
+    assert metadata.redelivery_count == 0
+
+    # Workers are named after their group and their position in it.
+    assert metadata.producer_name =~ ~r/^test_producer-\d+$/
+
+    assert metadata.message_id
+    assert metadata.message_id_string =~ ~r/^\d+:\d+:-?\d+/
+    assert %{command: _, metadata: _} = metadata.raw
   end
 
   test "messages from multiple topics are all received and acknowledged" do
@@ -279,7 +303,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         client: @client,
         name: :failover_active_pipeline,
         active_state_callback: {Utils, :notify_active_state, [self(), :first]},
-        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+        consumer_opts: [subscription_type: :failover, initial_position: :latest]
       )
 
     assert_receive {:active_state_callback,
@@ -301,7 +325,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         client: @client,
         name: :failover_standby_pipeline,
         active_state_callback: {Utils, :notify_active_state, [self(), :second]},
-        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+        consumer_opts: [subscription_type: :failover, initial_position: :latest]
       )
 
     await_failover_states(%{first: :active}, subscription)
@@ -322,7 +346,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
         client: @client,
         name: :failover_partition_callback_pipeline,
         active_state_callback: callback,
-        consumer_opts: [subscription_type: :Failover, initial_position: :latest]
+        consumer_opts: [subscription_type: :failover, initial_position: :latest]
       )
 
     topics =
@@ -342,7 +366,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
     expected_topics =
       for partition <- 0..(@partition_count - 1),
-          do: Pulsar.PartitionTopic.name(@partitioned_topic, partition)
+          do: Pulsar.Topic.partition(@partitioned_topic, partition)
 
     assert MapSet.new(topics) == MapSet.new(expected_topics)
     assert :ok = Broadway.stop(pipeline)

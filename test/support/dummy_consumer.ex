@@ -3,7 +3,7 @@ defmodule OffBroadwayPulsar.Test.Support.DummyConsumer do
   use Pulsar.Consumer.Callback
 
   @impl true
-  def init([test_pid]) do
+  def init([test_pid], _context) do
     {:ok, test_pid}
   end
 

@@ -8,8 +8,9 @@ defmodule OffBroadway.Pulsar.Producer do
   requesting per-message.
 
   Supports two connection patterns:
-  - **Producer-managed**: Pass `:host` to have the producer start its own Pulsar connection
-  - **Application-managed**: Omit `:host` to use a globally started Pulsar connection
+  - **Producer-managed**: Pass `:host` to have the producer start its own `Pulsar.Client`
+  - **Application-managed**: Omit `:host` to use a `Pulsar.Client` already running in your
+    application's supervision tree
 
   See `start_link/1` for detailed configuration options.
   """
@@ -23,11 +24,18 @@ defmodule OffBroadway.Pulsar.Producer do
   @supported_conn_opts [
     :socket_opts,
     :auth,
-    :conn_timeout
+    :conn_timeout,
+    :max_frame_size,
+    :ping_interval,
+    :cleanup_interval,
+    :request_timeout
   ]
 
   @default_conn_opts []
 
+  # Excludes :consumer_count, whose extra workers would all report the same resolved
+  # topic and corrupt permit accounting, and the :flow_* options, which this producer
+  # replaces by forcing flow_initial: 0.
   @supported_consumer_opts [
     :subscription_type,
     :initial_position,
@@ -43,11 +51,13 @@ defmodule OffBroadway.Pulsar.Producer do
     :expire_incomplete_chunked_message_after,
     :chunk_cleanup_interval,
     :read_compacted,
+    :batch_index_ack_enabled,
+    :schema,
     :partition_discovery_interval_ms
   ]
 
   @default_consumer_opts [
-    subscription_type: :Shared
+    subscription_type: :shared
   ]
 
   # Flow control defaults - matches pulsar-elixir naming convention
@@ -62,11 +72,11 @@ defmodule OffBroadway.Pulsar.Producer do
   ## Configuration
 
   - `:host` - Broker URL (e.g., "pulsar://localhost:6650") (optional).
-    If provided, the producer will start its own Pulsar connection.
-    If not provided, the producer assumes Pulsar is already started globally
-    (e.g., in your application's supervision tree).
-  - `:client` - Client name to use when `:host` is not provided (optional, default: `:default`).
-    Only used when connecting to a globally started Pulsar instance.
+    If provided, the producer starts its own `Pulsar.Client`, linked to the producer.
+    If not provided, a `Pulsar.Client` named `:client` is assumed to be running already.
+  - `:client` - Name of the `Pulsar.Client` to use (optional, default: `:default`).
+    Names the client this producer starts when `:host` is given, and selects the client
+    to attach to when it is not.
   - `:topic` - A single Pulsar topic to consume from (required if `:topics` is not set)
   - `:topics` - A list of Pulsar topics to consume from (required if `:topic` is not set).
     One consumer is started per topic. Providing a single topic via `:topic` is equivalent
@@ -74,17 +84,22 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:subscription` - The subscription name (required)
   - `:active_state_callback` - An optional `{module, function, extra_args}` tuple that receives
     active/passive state changes for Failover consumers. See "Failover Active State" below.
-  - `:conn_opts` - Connection options passed to `Pulsar.start/1` (optional, only used if `:host` is provided):
+  - `:conn_opts` - Connection options passed to `Pulsar.Client.start_link/1` (optional, only
+    used if `:host` is provided):
     - `:socket_opts` - Socket options (e.g., `[verify: :verify_none]`)
-    - `:auth` - Authentication configuration
-    - `:conn_timeout` - Connection timeout in milliseconds
-  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.start_consumer/4` (optional).
+    - `:auth` - Authentication configuration, as `[type: module, opts: keyword]`
+    - `:conn_timeout` - Connection timeout in milliseconds (default: 1_000)
+    - `:max_frame_size` - Largest frame accepted from the cluster, in bytes
+    - `:ping_interval` - Milliseconds between keepalive pings (default: 60_000)
+    - `:cleanup_interval` - Milliseconds between sweeps for unanswered requests (default: 30_000)
+    - `:request_timeout` - Milliseconds after which an unanswered request fails (default: 60_000)
+  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.Consumer.start/1` (optional).
     Applied to all topics when using `:topics`.
-    - `:subscription_type` - Subscription type (`:Exclusive`, `:Failover`, `:Shared`, `:Key_Shared`, default: `:Shared`)
+    - `:subscription_type` - Subscription type (`:exclusive`, `:failover`, `:shared`, `:key_shared`, default: `:shared`)
     - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
     - `:durable` - Whether subscription is durable (default: `true`)
     - `:force_create_topic` - Force topic creation (default: `true`)
-    - `:start_message_id` - Start from specific message ID
+    - `:start_message_id` - Start from specific `{ledger_id, entry_id}`
     - `:start_timestamp` - Start from timestamp
     - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
     - `:dead_letter_policy` - Dead letter queue configuration
@@ -94,8 +109,16 @@ defmodule OffBroadway.Pulsar.Producer do
     - `:expire_incomplete_chunked_message_after` - Timeout in milliseconds for incomplete chunked messages (default: 60_000)
     - `:chunk_cleanup_interval` - Interval in milliseconds for checking expired chunked messages (default: 30_000)
     - `:read_compacted` - If true, reads messages from the compacted topic ledger (default: false)
+    - `:batch_index_ack_enabled` - Acknowledge individual messages within a batched entry rather
+      than the whole entry (default: false). Worth enabling for Broadway, which routinely
+      completes messages from one batch out of order, but it requires
+      `acknowledgmentAtBatchIndexLevelEnabled=true` on the broker
+    - `:schema` - Schema to register with the subscription, as `[type: atom, definition: term]`
     - `:partition_discovery_interval_ms` - How often (in milliseconds) to poll for new partitions on
       partitioned topics. Set to `false` to disable discovery (default: 60_000)
+
+  `:consumer_count` is not accepted here; use Broadway's `producer: [concurrency: N]`.
+  Nor are the consumer's own `:flow_*` options — see "Flow Control Options" below.
 
   The total consumer startup delay is `startup_delay_ms + random(0, startup_jitter_ms)`, applied on every consumer start/restart.
 
@@ -118,9 +141,36 @@ defmodule OffBroadway.Pulsar.Producer do
   When using `producer: [concurrency: N]` with N > 1, each producer maintains
   its own independent permit window.
 
+  ## Message Metadata
+
+  Each `Broadway.Message` carries the following `:metadata`:
+
+  - `:message_id` - Opaque id the acknowledger acks with. A *list* for a chunked message
+  - `:message_id_string` - The id as Pulsar prints it (`ledgerId:entryId:partition`, plus the
+    batch index when batched), for logging and correlation
+  - `:topic` - The topic consumed from; the concrete partition for a partitioned topic, which
+    makes it the right key for per-partition metrics
+  - `:base_topic` - The topic the consumer was configured with. Equal to `:topic` unless the
+    topic is partitioned; the one to route business logic on
+  - `:partition` - The partition index, or `nil` when the topic is not partitioned
+  - `:subscription` - The Pulsar subscription name
+  - `:key` - The partition key, or `nil`
+  - `:ordering_key` - The ordering key, or `nil`
+  - `:properties` - User properties, as a map
+  - `:producer_name` - The producer that published the message
+  - `:publish_time` - Broker publish timestamp, in milliseconds since the epoch
+  - `:event_time` - Application-set event time, or `nil` when unset
+  - `:redelivery_count` - How many times the broker has redelivered the message
+  - `:raw` - The underlying protocol structs, as a map of `:command`, `:metadata`,
+    `:single_metadata` and `:broker_metadata`. **Unstable**: its shape follows the wire
+    protocol. Reach for it only for details the fields above do not cover
+
+  Those fields come from `Pulsar.Message`, so they answer the same way whether a message
+  arrived on its own, inside a batch, or split across chunks.
+
   ## Failover Active State
 
-  Consumers using a `:Failover` subscription report broker-provided active and
+  Consumers using a `:failover` subscription report broker-provided active and
   passive state changes through the optional `:active_state_callback`. Configure
   the callback as a `{module, function, extra_args}` tuple. It is invoked as
   `apply(module, function, [metadata | extra_args])`, where `metadata` contains:
@@ -168,11 +218,11 @@ defmodule OffBroadway.Pulsar.Producer do
         }
       ]
 
-  ### Pattern 3: Application-managed connection (no host)
+  ### Pattern 3: Application-managed client (no host)
 
       # In your application.ex:
       children = [
-        {Pulsar, host: "pulsar://localhost:6650"},
+        {Pulsar.Client, host: "pulsar://localhost:6650"},
         MyApp.PulsarPipeline
       ]
 
@@ -183,6 +233,9 @@ defmodule OffBroadway.Pulsar.Producer do
           subscription: "my-subscription"
         }
       ]
+
+  Preferred over `:host`: the client's lifetime is owned by your supervision tree
+  rather than by whichever producer process happened to start it.
   """
   def start_link(opts) do
     GenStage.start_link(__MODULE__, opts)
@@ -209,22 +262,7 @@ defmodule OffBroadway.Pulsar.Producer do
 
     active_state_callback = Keyword.get(opts, :active_state_callback)
 
-    # Only start Pulsar if host is provided (producer-managed connection)
-    # Otherwise, assume Pulsar is already started globally (application-managed connection)
-    case Keyword.fetch(opts, :host) do
-      {:ok, host} ->
-        conn_opts =
-          opts
-          |> Keyword.get(:conn_opts, @default_conn_opts)
-          |> Keyword.take(@supported_conn_opts)
-
-        pulsar_opts = Keyword.put(conn_opts, :host, host)
-
-        {:ok, _pid} = Pulsar.start(pulsar_opts)
-
-      :error ->
-        :ok
-    end
+    :ok = maybe_start_client(opts, client)
 
     consumer_opts_base =
       opts
@@ -233,34 +271,23 @@ defmodule OffBroadway.Pulsar.Producer do
       |> Keyword.put(:flow_initial, 0)
       |> Keyword.put(:client, client)
 
-    # Start one consumer group per topic. Each group gets a unique name to
-    # support both multi-topic and producer concurrency > 1.
-    # consumer_registry is passed so each partition consumer can look up its
-    # ConsumerGroup name and derive the partition topic as its stable map key.
-    consumer_registry = Pulsar.Client.consumer_registry(client)
+    # Start one consumer per topic. Each gets a unique name to support both
+    # multi-topic and producer concurrency > 1. They run under the client's
+    # supervisor, not under this producer.
+    Enum.each(topics, fn topic ->
+      unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
 
-    consumer_groups =
-      Enum.map(topics, fn topic ->
-        unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
+      topic_opts =
+        Keyword.merge(consumer_opts_base,
+          topic: topic,
+          subscription_name: subscription,
+          callback_module: OffBroadway.Pulsar.Consumer,
+          name: unique_name,
+          init_args: [self(), active_state_callback]
+        )
 
-        topic_opts =
-          consumer_opts_base
-          |> Keyword.put(:name, unique_name)
-          |> Keyword.put(
-            :init_args,
-            [self(), topic, consumer_registry, subscription, active_state_callback]
-          )
-
-        {:ok, group} =
-          Pulsar.start_consumer(
-            topic,
-            subscription,
-            OffBroadway.Pulsar.Consumer,
-            topic_opts
-          )
-
-        group
-      end)
+      {:ok, _consumer} = Pulsar.Consumer.start(topic_opts)
+    end)
 
     # Extract flow control configuration (matches pulsar-elixir naming)
     flow_initial =
@@ -285,15 +312,13 @@ defmodule OffBroadway.Pulsar.Producer do
     end
 
     state = %{
-      consumer_groups: consumer_groups,
-      # Populated via :consumer_ready as each consumer starts.
-      # Keyed by topic (stable string) rather than consumer PID so that
-      # consumer restarts simply overwrite the entry without leaving stale PIDs.
-      # Maps topic => {consumer_pid, outstanding_permits}.
+      # topic => {consumer_pid, outstanding_permits}, populated via :consumer_ready.
+      # Keyed by resolved topic rather than PID so a restarted consumer overwrites
+      # its entry instead of leaving a stale one behind.
       consumers: %{},
       demand: 0,
-      # Buffer entries are {%Pulsar.Message{}, consumer_pid, topic} triples:
-      # consumer_pid routes ACKs/NACKs, topic routes flow-permit accounting.
+      # {%Pulsar.Message{}, consumer_pid, context} triples: consumer_pid routes
+      # ACKs/NACKs, context.topic routes flow-permit accounting.
       buffer: [],
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
@@ -313,7 +338,7 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   @impl GenStage
-  def handle_info({:consumer_ready, consumer_pid, topic}, state) do
+  def handle_info({:consumer_ready, consumer_pid, %{topic: topic}}, state) do
     Logger.debug(
       "Consumer #{inspect(consumer_pid)} is ready for topic #{topic}, sending initial flow of #{state.flow_initial} permits"
     )
@@ -335,9 +360,9 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  def handle_info({:pulsar_message, message_info, consumer_pid, topic}, state) do
-    # consumer_pid routes ACK/NACK; topic routes flow-permit accounting.
-    new_buffer = state.buffer ++ [{message_info, consumer_pid, topic}]
+  def handle_info({:pulsar_message, message_info, consumer_pid, context}, state) do
+    # consumer_pid routes ACK/NACK; context.topic routes flow-permit accounting.
+    new_buffer = state.buffer ++ [{message_info, consumer_pid, context}]
     Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
 
     dispatch_messages(%{state | buffer: new_buffer})
@@ -354,7 +379,7 @@ defmodule OffBroadway.Pulsar.Producer do
   defp dispatch_messages(%{buffer: buffer, demand: demand} = state) do
     {to_dispatch, to_drop, remaining} = pull_messages(buffer, demand)
 
-    broadway_messages = Enum.map(to_dispatch, fn {msg, pid, _topic} -> wrap_message(msg, pid) end)
+    broadway_messages = Enum.map(to_dispatch, fn {msg, pid, context} -> wrap_message(msg, pid, context) end)
     Logger.debug("Dispatching #{length(to_dispatch)} messages, #{length(remaining)} remaining in buffer")
 
     new_demand = demand - length(to_dispatch)
@@ -378,9 +403,11 @@ defmodule OffBroadway.Pulsar.Producer do
 
   defp pull_messages(buffer, demand) do
     {to_dispatch, to_drop, remaining, _count} =
-      Enum.reduce(buffer, {[], [], [], 0}, fn {msg, _pid, _topic} = entry, {dispatch, drop, rest, count} ->
+      Enum.reduce(buffer, {[], [], [], 0}, fn {msg, _pid, _context} = entry, {dispatch, drop, rest, count} ->
         cond do
-          match?(%{chunked: true, complete: false}, msg) ->
+          # No usable payload, so it is dropped rather than dispatched — but it goes to
+          # `drop`, not `rest`, so the chunks that did arrive still count against permits.
+          not Pulsar.Message.complete?(msg) ->
             {dispatch, [entry | drop], rest, count}
 
           count < demand ->
@@ -402,24 +429,33 @@ defmodule OffBroadway.Pulsar.Producer do
   # used to decrement each topic's consumer outstanding permits.
   defp permits_consumed(entries) do
     entries
-    |> Enum.group_by(fn {_msg, _pid, topic} -> topic end)
+    |> Enum.group_by(fn {_msg, _pid, context} -> context.topic end)
     |> Map.new(fn {topic, items} ->
       count = Enum.sum(Enum.map(items, fn {msg, _, _} -> Pulsar.Message.num_broker_messages(msg) end))
       {topic, count}
     end)
   end
 
-  defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer) do
+  defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer, context) do
     %Message{
       data: pulsar_message.payload,
       metadata: %{
-        message_id: pulsar_message.message_id_to_ack,
-        command: pulsar_message.command,
-        metadata: pulsar_message.metadata,
-        single_metadata: pulsar_message.single_metadata,
-        broker_metadata: pulsar_message.broker_metadata
+        message_id: pulsar_message.message_id,
+        message_id_string: Pulsar.Message.message_id_string(pulsar_message),
+        topic: context.topic,
+        base_topic: context.base_topic,
+        partition: context.partition,
+        subscription: context.subscription_name,
+        key: Pulsar.Message.key(pulsar_message),
+        ordering_key: Pulsar.Message.ordering_key(pulsar_message),
+        properties: Pulsar.Message.properties(pulsar_message),
+        producer_name: Pulsar.Message.producer_name(pulsar_message),
+        publish_time: Pulsar.Message.publish_time(pulsar_message),
+        event_time: Pulsar.Message.event_time(pulsar_message),
+        redelivery_count: Pulsar.Message.redelivery_count(pulsar_message),
+        raw: pulsar_message.raw
       },
-      acknowledger: {OffBroadway.Pulsar.Acknowledger, %{consumer: consumer}, pulsar_message.message_id_to_ack}
+      acknowledger: {OffBroadway.Pulsar.Acknowledger, %{consumer: consumer}, pulsar_message.message_id}
     }
   end
 
@@ -453,6 +489,32 @@ defmodule OffBroadway.Pulsar.Producer do
       {:error, reason} ->
         Logger.error("Failed to refill flow window for #{topic}: #{inspect(reason)}")
         consumers
+    end
+  end
+
+  defp maybe_start_client(opts, client) do
+    case Keyword.fetch(opts, :host) do
+      {:ok, host} ->
+        client_opts =
+          opts
+          |> Keyword.get(:conn_opts, @default_conn_opts)
+          |> Keyword.take(@supported_conn_opts)
+          |> Keyword.merge(host: host, name: client)
+
+        start_client(client_opts, client)
+
+      :error ->
+        :ok
+    end
+  end
+
+  # With concurrency > 1 every producer runs this; all but the first find the client
+  # already up, which is success rather than failure.
+  defp start_client(client_opts, client) do
+    case Pulsar.Client.start_link(client_opts) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} -> raise "failed to start Pulsar client #{inspect(client)}: #{inspect(reason)}"
     end
   end
 

@@ -10,7 +10,7 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
     end
 
     test "is defined for any reason and state" do
-      assert Consumer.terminate(:shutdown, %{broadway_producer: self(), topic: "t"}) == :ok
+      assert Consumer.terminate(:shutdown, %{broadway_producer: self(), context: %{topic: "t"}}) == :ok
       assert Consumer.terminate({:shutdown, :reason}, nil) == :ok
     end
   end
@@ -92,8 +92,14 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
   defp active_state_callback_state do
     %{
       broadway_producer: self(),
-      topic: "my-topic",
-      subscription: "my-subscription",
+      context: %{
+        topic: "my-topic",
+        base_topic: "my-topic",
+        partition: nil,
+        subscription_name: "my-subscription",
+        subscription_type: :failover,
+        consumer_name: "my-topic-my-subscription-0"
+      },
       active_state_callback: {Utils, :notify_active_state, [self(), :configured_argument]}
     }
   end

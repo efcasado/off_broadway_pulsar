@@ -34,7 +34,7 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
     :ok = System.create_partitioned_topic(topic, @initial_partitions)
 
     {:ok, producer_pid} =
-      Pulsar.start_producer(topic,
+      Pulsar.Producer.start(topic,
         client: @client,
         name: "partition-discovery-producer-#{test_id}",
         partition_discovery_interval_ms: @discovery_interval_ms
@@ -63,7 +63,7 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
     initial_count = @initial_partitions * @messages_per_partition
 
     for i <- 1..initial_count do
-      assert {:ok, _} = Pulsar.send(producer_pid, "initial-msg-#{i}", partition_key: "key-#{i}")
+      assert {:ok, _} = Pulsar.Producer.send(producer_pid, "initial-msg-#{i}", partition_key: "key-#{i}")
     end
 
     for _ <- 1..initial_count do
@@ -76,13 +76,14 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
     assert :ok = wait_for_partition_count(producer_pid, @expanded_partitions)
 
     # Produce to all partitions including the new ones. The keys are spread
-    # across a wide range so phash2 distributes them across all 4 partitions.
+    # across a wide range so the producer's hashing scheme distributes them
+    # across all 4 partitions.
     # The consumer's discovery poller will start consumers for the new partitions
     # within @discovery_interval_ms, draining any backlogged messages.
     new_count = @expanded_partitions * @messages_per_partition
 
     for i <- 1..new_count do
-      assert {:ok, _} = Pulsar.send(producer_pid, "new-msg-#{i}", partition_key: "key-#{i * 100}")
+      assert {:ok, _} = Pulsar.Producer.send(producer_pid, "new-msg-#{i}", partition_key: "key-#{i * 100}")
     end
 
     new_messages =
@@ -93,7 +94,7 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
 
     unique_partitions =
       new_messages
-      |> Enum.map(fn msg -> msg.metadata.command.message_id.partition end)
+      |> Enum.map(fn msg -> msg.metadata.partition end)
       |> Enum.uniq()
       |> length()
 
@@ -101,9 +102,11 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
            "Expected messages from #{@expanded_partitions} partitions, got #{unique_partitions}"
   end
 
+  # Reaches into pulsar-elixir internals: expansion is not observable publicly, since
+  # await_ready/2 is already satisfied by the partitions discovered at startup.
   defp wait_for_partition_count(producer_pid, expected) do
     Utils.wait_for(fn ->
-      length(Pulsar.PartitionedProducer.get_partition_groups(producer_pid)) == expected
+      length(Pulsar.Topology.groups(producer_pid)) == expected
     end)
   end
 end

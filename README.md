@@ -64,9 +64,17 @@ defmodule MyApp.PulsarPipeline do
 end
 ```
 
-If you're running Pulsar globally in your application supervision tree, omit the `:host` option and optionally specify `:client`:
+If you run a `Pulsar.Client` in your application supervision tree (preferred, since the
+connection then outlives any one producer) omit `:host` and optionally specify `:client`:
 
 ```elixir
+# In your application.ex:
+children = [
+  {Pulsar.Client, host: "pulsar://localhost:6650"},
+  MyApp.PulsarPipeline
+]
+
+# In your producer config:
 producer: [
   module: {OffBroadway.Pulsar.Producer,
     topic: "persistent://public/default/my-topic",
@@ -77,9 +85,30 @@ producer: [
 ]
 ```
 
+## Message metadata
+
+Each `Broadway.Message` carries its Pulsar origin and message fields in `:metadata`:
+
+```elixir
+def handle_message(_processor, message, _context) do
+  %{
+    topic: topic,          # resolved topic; the concrete partition if partitioned
+    base_topic: base,      # the configured topic
+    partition: partition,  # partition index, or nil
+    key: key,
+    properties: properties
+  } = message.metadata
+
+  message
+end
+```
+
+See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#module-message-metadata)
+for the full list.
+
 ## Failover active state
 
-For `:Failover` subscriptions, `off_broadway_pulsar` reports when an underlying
+For `:failover` subscriptions, `off_broadway_pulsar` reports when an underlying
 Pulsar consumer becomes active or passive through an optional callback. Configure
 the callback as a `{module, function, extra_args}` tuple:
 
@@ -88,7 +117,7 @@ producer: [
   module: {OffBroadway.Pulsar.Producer,
     topic: "persistent://public/default/my-topic",
     subscription: "my-subscription",
-    consumer_opts: [subscription_type: :Failover],
+    consumer_opts: [subscription_type: :failover],
     active_state_callback: {MyApp.FailoverObserver, :handle_active_state, []}
   },
   concurrency: 1

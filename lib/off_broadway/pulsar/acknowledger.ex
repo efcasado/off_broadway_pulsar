@@ -9,13 +9,13 @@ defmodule OffBroadway.Pulsar.Acknowledger do
         List.wrap(message_id)
       end)
 
-    :ok = Pulsar.ack(consumer, ack_ids)
+    :ok = Pulsar.Consumer.ack(consumer, ack_ids)
 
     nack_ids =
       Enum.flat_map(failed, fn %{acknowledger: {_, _, message_id}} ->
         List.wrap(message_id)
       end)
 
-    :ok = Pulsar.nack(consumer, nack_ids)
+    :ok = Pulsar.Consumer.nack(consumer, nack_ids)
   end
 end
