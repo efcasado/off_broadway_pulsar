@@ -15,15 +15,42 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
     end
   end
 
-  describe "handle_invalid_message/2" do
-    test "forwards to the producer instead of acking, so permits stay accounted" do
+  describe "handle_message/2" do
+    test "forwards a complete message and leaves it unacknowledged" do
       state = active_state_callback_state()
-      message = %Pulsar.Message{payload: "corrupt", validation_error: :checksum_mismatch}
+      message = %Pulsar.Message{payload: "ok"}
 
-      assert Consumer.handle_invalid_message(message, state) == {:noreply, state}
+      assert Consumer.handle_message(message, state) == {:noreply, state}
 
       assert_receive {:pulsar_message, ^message, consumer_pid, %{topic: "my-topic"}}
       assert consumer_pid == self()
+    end
+
+    test "drops an incomplete chunked message, reporting the permits it cost" do
+      state = active_state_callback_state()
+
+      message = %Pulsar.Message{
+        payload: "part",
+        chunk_metadata: %{chunked: true, complete: false, message_ids: [:id_1, :id_2]}
+      }
+
+      # :ok, so the worker acks it rather than the producer.
+      assert Consumer.handle_message(message, state) == {:ok, state}
+
+      assert_receive {:permits_consumed, %{topic: "my-topic"}, 2}
+      refute_receive {:pulsar_message, _, _, _}
+    end
+  end
+
+  describe "handle_invalid_message/2" do
+    test "drops the message, reporting the permit it cost" do
+      state = active_state_callback_state()
+      message = %Pulsar.Message{payload: "corrupt", validation_error: :checksum_mismatch}
+
+      assert Consumer.handle_invalid_message(message, state) == {:ok, state}
+
+      assert_receive {:permits_consumed, %{topic: "my-topic"}, 1}
+      refute_receive {:pulsar_message, _, _, _}
     end
   end
 

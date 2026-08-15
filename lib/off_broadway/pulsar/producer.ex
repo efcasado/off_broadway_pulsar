@@ -232,6 +232,30 @@ defmodule OffBroadway.Pulsar.Producer do
 
     ensure_client_running!(client)
 
+    # Everything that can raise runs before the first consumer is started: a raise
+    # afterwards would leave that consumer running under the client while Broadway
+    # retries init/1, leaking another one on every attempt.
+    flow_initial =
+      opts
+      |> Keyword.get(:flow_initial, @default_flow_initial)
+      |> validate_positive_integer!(:flow_initial)
+
+    flow_threshold =
+      opts
+      |> Keyword.get(:flow_threshold, @default_flow_threshold)
+      |> validate_positive_integer!(:flow_threshold)
+
+    flow_refill =
+      opts
+      |> Keyword.get(:flow_refill, @default_flow_refill)
+      |> validate_positive_integer!(:flow_refill)
+
+    # Validate threshold < initial (otherwise refill never triggers)
+    if flow_threshold >= flow_initial do
+      raise ArgumentError,
+            "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
+    end
+
     consumer_opts_base =
       opts
       |> Keyword.get(:consumer_opts, @default_consumer_opts)
@@ -256,28 +280,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
       {:ok, _consumer} = Pulsar.Consumer.start(topic_opts)
     end)
-
-    # Extract flow control configuration (matches pulsar-elixir naming)
-    flow_initial =
-      opts
-      |> Keyword.get(:flow_initial, @default_flow_initial)
-      |> validate_positive_integer!(:flow_initial)
-
-    flow_threshold =
-      opts
-      |> Keyword.get(:flow_threshold, @default_flow_threshold)
-      |> validate_positive_integer!(:flow_threshold)
-
-    flow_refill =
-      opts
-      |> Keyword.get(:flow_refill, @default_flow_refill)
-      |> validate_positive_integer!(:flow_refill)
-
-    # Validate threshold < initial (otherwise refill never triggers)
-    if flow_threshold >= flow_initial do
-      raise ArgumentError,
-            "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
-    end
 
     state = %{
       # topic => {consumer_pid, outstanding_permits}, populated via :consumer_ready.
@@ -329,11 +331,21 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   def handle_info({:pulsar_message, message_info, consumer_pid, context}, state) do
-    # consumer_pid routes ACK/NACK; context.topic routes flow-permit accounting.
     new_buffer = state.buffer ++ [{message_info, consumer_pid, context}]
     Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
 
     dispatch_messages(%{state | buffer: new_buffer})
+  end
+
+  # The consumer dropped a message instead of forwarding it, so nothing else will take
+  # the permits it cost off the window.
+  def handle_info({:permits_consumed, %{topic: topic}, count}, state) do
+    state =
+      state
+      |> decrement_permits(%{topic => count})
+      |> maybe_refill_flow()
+
+    {:noreply, [], state}
   end
 
   defp dispatch_messages(%{demand: 0} = state) do
@@ -345,19 +357,20 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   defp dispatch_messages(%{buffer: buffer, demand: demand} = state) do
-    {to_dispatch, to_drop, remaining} = pull_messages(buffer, demand)
+    {to_dispatch, remaining} = Enum.split(buffer, demand)
 
     broadway_messages = Enum.map(to_dispatch, fn {msg, pid, context} -> wrap_message(msg, pid, context) end)
     Logger.debug("Dispatching #{length(to_dispatch)} messages, #{length(remaining)} remaining in buffer")
 
-    new_demand = demand - length(to_dispatch)
+    state =
+      %{state | buffer: remaining, demand: demand - length(to_dispatch)}
+      |> decrement_permits(permits_consumed(to_dispatch))
+      |> maybe_refill_flow()
 
-    discard(to_drop)
+    {:noreply, broadway_messages, state}
+  end
 
-    # Decrement outstanding permits per topic based on how many broker
-    # messages each topic contributed to this dispatch batch.
-    consumed = permits_consumed(to_dispatch ++ to_drop)
-
+  defp decrement_permits(state, consumed) do
     consumers =
       Enum.reduce(consumed, state.consumers, fn {topic, count}, acc ->
         Map.update(acc, topic, {nil, 0}, fn {pid, outstanding} ->
@@ -365,57 +378,10 @@ defmodule OffBroadway.Pulsar.Producer do
         end)
       end)
 
-    state = %{state | buffer: remaining, demand: new_demand, consumers: consumers}
-    state = maybe_refill_flow(state)
-
-    {:noreply, broadway_messages, state}
+    %{state | consumers: consumers}
   end
 
-  defp pull_messages(buffer, demand) do
-    {to_dispatch, to_drop, remaining, _count} =
-      Enum.reduce(buffer, {[], [], [], 0}, fn {msg, _pid, _context} = entry, {dispatch, drop, rest, count} ->
-        cond do
-          # `drop` rather than `rest`: acked below, and still counted against permits.
-          not deliverable?(msg) ->
-            {dispatch, [entry | drop], rest, count}
-
-          count < demand ->
-            {[entry | dispatch], drop, rest, count + 1}
-
-          true ->
-            {dispatch, drop, [entry | rest], count}
-        end
-      end)
-
-    {
-      Enum.reverse(to_dispatch),
-      Enum.reverse(to_drop),
-      Enum.reverse(remaining)
-    }
-  end
-
-  defp deliverable?(msg), do: Pulsar.Message.complete?(msg) and Pulsar.Message.valid?(msg)
-
-  # Dropped entries never reach the acknowledger, and left unacked they would hold the
-  # subscription's cursor for the life of the consumer. Nacking would only redeliver a
-  # payload that is still partial or still corrupt.
-  defp discard(entries) do
-    Enum.each(entries, fn {msg, consumer_pid, _context} ->
-      Logger.warning("Dropping undeliverable message: #{msg.validation_error || :incomplete_chunked_message}")
-      ack_discarded(consumer_pid, msg)
-    end)
-  end
-
-  # Unlike send_flow/3, Pulsar.Consumer.ack/2 exits rather than reporting a dead worker,
-  # and a consumer that restarted while its messages sat in the buffer is routine.
-  defp ack_discarded(consumer_pid, msg) do
-    Pulsar.Consumer.ack(consumer_pid, msg.message_id)
-  catch
-    :exit, reason -> Logger.error("Failed to ack undeliverable message: #{inspect(reason)}")
-  end
-
-  # Returns a map of topic => broker_message_count for the given buffer entries,
-  # used to decrement each topic's consumer outstanding permits.
+  # topic => broker message count, since one entry can be several broker messages.
   defp permits_consumed(entries) do
     entries
     |> Enum.group_by(fn {_msg, _pid, context} -> context.topic end)
@@ -481,9 +447,9 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  # Otherwise this surfaces as a :noproc exit from inside the client's supervisor when
-  # the first consumer is started.
-  defp ensure_client_running!(client) do
+  # Pulsar.Consumer.start/1 answers {:error, :client_not_found}, so without this the
+  # first sign of a missing client is a MatchError on that tuple.
+  defp ensure_client_running!(client) when is_atom(client) do
     if is_nil(Process.whereis(client)) do
       raise ArgumentError, """
       Pulsar client #{inspect(client)} is not running. Supervise it above the pipeline:

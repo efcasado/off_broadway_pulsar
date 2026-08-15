@@ -5,6 +5,21 @@ defmodule OffBroadway.Pulsar.ProducerTest do
   alias OffBroadway.Pulsar.Producer
   alias OffBroadwayPulsar.Test.Support.StubConsumer
 
+  @context %{
+    topic: "topic",
+    base_topic: "topic",
+    partition: nil,
+    subscription_name: "sub",
+    subscription_type: :shared,
+    consumer_name: "topic-sub-0"
+  }
+
+  @message %Pulsar.Message{
+    payload: "ok",
+    message_id: %{ledgerId: 1, entryId: 2, partition: -1, batch_index: -1},
+    raw: %{command: %{redelivery_count: 0}}
+  }
+
   describe "init/1" do
     test "raises a helpful error when the client is not running" do
       assert_raise ArgumentError, ~r/Pulsar client :no_such_client is not running/, fn ->
@@ -17,77 +32,77 @@ defmodule OffBroadway.Pulsar.ProducerTest do
         Producer.init(subscription: "s")
       end
     end
+
+    test "validates flow options before starting any consumer" do
+      # A registered name is all ensure_client_running!/1 checks. Were the flow options
+      # validated after the consumers are started, this would fail with a MatchError on
+      # Pulsar.Consumer.start/1's {:error, :client_not_found} instead.
+      start_supervised!(%{
+        id: :fake_client,
+        start: {Agent, :start_link, [fn -> :ok end, [name: :fake_client]]}
+      })
+
+      assert_raise ArgumentError, ~r/flow_threshold \(10\) must be less than flow_initial \(10\)/, fn ->
+        Producer.init(topic: "t", subscription: "s", client: :fake_client, flow_initial: 10, flow_threshold: 10)
+      end
+    end
   end
 
-  describe "undeliverable messages" do
-    setup do
-      {:ok, consumer} = start_supervised({StubConsumer, self()})
-      %{consumer: consumer, state: state(consumer)}
-    end
-
-    test "an incomplete chunked message is dropped, acked and counted", %{consumer: consumer, state: state} do
-      # Two of three chunks arrived before it expired, so the broker charged two permits.
-      message = %Pulsar.Message{
-        payload: "part",
-        message_id: [:id_1, :id_2],
-        chunk_metadata: %{chunked: true, complete: false, message_ids: [:id_1, :id_2]}
-      }
-
-      assert {:noreply, [], new_state} = deliver(message, state)
-
-      assert_receive {:ack, [:id_1, :id_2]}
-      assert new_state.buffer == []
-      assert %{"topic" => {^consumer, 8}} = new_state.consumers
-    end
-
-    test "an invalid message is dropped, acked and counted", %{consumer: consumer, state: state} do
-      message = %Pulsar.Message{payload: "corrupt", message_id: :id, validation_error: :checksum_mismatch}
-
-      assert {:noreply, [], new_state} = deliver(message, state)
-
-      assert_receive {:ack, [:id]}
-      assert new_state.buffer == []
-      assert %{"topic" => {^consumer, 9}} = new_state.consumers
-    end
-
-    test "a complete, valid message is dispatched and left for the acknowledger", %{state: state} do
-      message_id = %{ledgerId: 1, entryId: 2, partition: -1, batch_index: -1}
-      message = %Pulsar.Message{payload: "ok", message_id: message_id, raw: %{command: %{redelivery_count: 0}}}
-
-      assert {:noreply, [%Message{data: "ok", metadata: metadata}], new_state} = deliver(message, state)
+  describe "dispatch" do
+    test "wraps a message and leaves it for the acknowledger" do
+      assert {:noreply, [%Message{data: "ok", metadata: metadata}], new_state} =
+               Producer.handle_info({:pulsar_message, @message, self(), @context}, state())
 
       assert metadata.message_id_string == "1:2:-1"
-      refute_receive {:ack, _}
+      assert metadata.topic == "topic"
       assert new_state.buffer == []
+      # One broker message, so one permit off the window of 10.
+      assert %{"topic" => {_pid, 9}} = new_state.consumers
+    end
+
+    test "dispatches up to demand and buffers the rest" do
+      buffer = for _ <- 1..3, do: {@message, self(), @context}
+      state = %{state() | buffer: buffer, demand: 0}
+
+      assert {:noreply, dispatched, new_state} = Producer.handle_demand(2, state)
+
+      assert length(dispatched) == 2
+      assert length(new_state.buffer) == 1
+      assert new_state.demand == 0
+      # Only the dispatched two are counted; the buffered one has not been handed on yet.
+      assert %{"topic" => {_pid, 8}} = new_state.consumers
     end
   end
 
-  defp deliver(message, state) do
-    %{"topic" => {consumer, _permits}} = state.consumers
-    Producer.handle_info({:pulsar_message, message, consumer, context()}, state)
+  describe ":permits_consumed" do
+    test "takes a dropped message off the window without dispatching anything" do
+      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, @context, 2}, state())
+
+      assert %{"topic" => {_pid, 8}} = new_state.consumers
+    end
+
+    test "refills once the window falls to the threshold" do
+      {:ok, consumer} = start_supervised({StubConsumer, self()})
+      state = %{state() | consumers: %{"topic" => {consumer, 3}}, flow_threshold: 2, flow_refill: 5}
+
+      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, @context, 1}, state)
+
+      # 3 - 1 = 2, at the threshold, so a refill of 5 follows.
+      assert_receive {:send_flow, 5}
+      assert %{"topic" => {^consumer, 7}} = new_state.consumers
+    end
   end
 
-  defp state(consumer) do
+  defp state do
     %{
-      consumers: %{"topic" => {consumer, 10}},
+      consumers: %{"topic" => {self(), 10}},
       demand: 10,
       buffer: [],
       flow_initial: 10,
-      # Below the outstanding count, so no refill fires and the test observes the
+      # Below the outstanding count, so no refill fires and a test observes the
       # decrement rather than a refill on top of it.
       flow_threshold: 2,
       flow_refill: 5
-    }
-  end
-
-  defp context do
-    %{
-      topic: "topic",
-      base_topic: "topic",
-      partition: nil,
-      subscription_name: "sub",
-      subscription_type: :shared,
-      consumer_name: "topic-sub-0"
     }
   end
 end
