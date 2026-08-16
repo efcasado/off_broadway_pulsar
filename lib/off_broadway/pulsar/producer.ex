@@ -16,16 +16,15 @@ defmodule OffBroadway.Pulsar.Producer do
   See `start_link/1` for detailed configuration options.
   """
 
+  @behaviour Broadway.Producer
+
   use GenStage
 
   alias Broadway.Message
   alias OffBroadway.Pulsar.Consumer, as: Callback
+  alias Pulsar.Consumer.Options
 
   require Logger
-
-  @default_consumer_opts [
-    subscription_type: :shared
-  ]
 
   # Keys the producer sets on every consumer it starts. A value given here would be silently
   # discarded by the merge below, or would break the producer's own flow accounting.
@@ -77,11 +76,11 @@ defmodule OffBroadway.Pulsar.Producer do
     ],
     consumer_opts: [
       type: :keyword_list,
-      default: @default_consumer_opts,
+      default: [subscription_type: :shared],
       doc: """
       Options forwarded to `Pulsar.Consumer.start_link/1`, applied to every topic. They are
-      documented and validated by `Pulsar.Consumer`, which rejects unknown keys. Setting this
-      replaces the default rather than merging into it.
+      documented and validated by `Pulsar.Consumer`, which rejects unknown keys and applies its
+      own defaults to whatever is left out — including `subscription_type: :shared`.
 
       The keys the producer sets itself are rejected here: #{@reserved_keys_doc}. Use
       `producer: [concurrency: N]` for the consumer count and the `:flow_*` options above for
@@ -120,8 +119,14 @@ defmodule OffBroadway.Pulsar.Producer do
 
   #{NimbleOptions.docs(@opts_schema)}
 
-  Options are validated when the stage starts, so a misconfigured pipeline fails at boot
-  rather than at the first message.
+  Options are validated in `c:Broadway.Producer.prepare_for_start/2`, which runs once in the
+  Broadway process before any stage starts, so `Broadway.start_link/2` raises the
+  configuration error itself rather than leaving each stage to crash-loop under its supervisor
+  until the pipeline gives up. They are validated again in `c:GenStage.init/1`, which also
+  covers starting this producer outside a Broadway pipeline.
+
+  That the client is running is checked per stage rather than once, since a stage that
+  restarts has to find it again.
 
   ## Flow Control
 
@@ -251,6 +256,19 @@ defmodule OffBroadway.Pulsar.Producer do
     GenStage.start_link(__MODULE__, opts)
   end
 
+  # Broadway runs this in its own process before starting the topology, so a configuration
+  # error is raised by Broadway.start_link/2 with the caller's stacktrace instead of being
+  # reported once per stage as a supervisor restart. It starts no children of its own: the
+  # consumers belong to the stages that feed on them, not to the pipeline.
+  @impl Broadway.Producer
+  def prepare_for_start(_module, broadway_opts) do
+    {_producer_module, producer_opts} = broadway_opts[:producer][:module]
+
+    validate_options!(producer_opts)
+
+    {[], broadway_opts}
+  end
+
   @impl GenStage
   def init(opts) do
     opts = validate_options!(opts)
@@ -266,11 +284,6 @@ defmodule OffBroadway.Pulsar.Producer do
     flow_initial = Keyword.fetch!(opts, :flow_initial)
     flow_threshold = Keyword.fetch!(opts, :flow_threshold)
     flow_refill = Keyword.fetch!(opts, :flow_refill)
-
-    if flow_threshold >= flow_initial do
-      raise ArgumentError,
-            "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
-    end
 
     # Each worker grants its own initial window on subscribe, so restarts and
     # late-discovered partitions come back with permits rather than waiting to be given
@@ -562,6 +575,14 @@ defmodule OffBroadway.Pulsar.Producer do
         {:error, error} -> raise ArgumentError, Exception.message(error)
       end
 
+    flow_initial = Keyword.fetch!(opts, :flow_initial)
+    flow_threshold = Keyword.fetch!(opts, :flow_threshold)
+
+    if flow_threshold >= flow_initial do
+      raise ArgumentError,
+            "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
+    end
+
     consumer_opts = Keyword.fetch!(opts, :consumer_opts)
 
     Enum.each(@reserved_consumer_opts, fn {key, reason} ->
@@ -569,6 +590,18 @@ defmodule OffBroadway.Pulsar.Producer do
         raise ArgumentError, "invalid value for :consumer_opts: #{inspect(key)} cannot be set here, #{reason}"
       end
     end)
+
+    try do
+      Options.validate!(
+        Keyword.merge(
+          [topic: "validation", subscription_name: "validation", callback_module: Callback],
+          consumer_opts
+        )
+      )
+    rescue
+      error in NimbleOptions.ValidationError ->
+        reraise ArgumentError, Exception.message(error), __STACKTRACE__
+    end
 
     opts
   end

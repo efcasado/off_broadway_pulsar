@@ -91,6 +91,58 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
   end
 
+  describe "prepare_for_start/2" do
+    defp broadway_opts(producer_opts) do
+      [
+        name: __MODULE__.Pipeline,
+        producer: [module: {Producer, producer_opts}, concurrency: 1],
+        processors: [default: [concurrency: 1]]
+      ]
+    end
+
+    test "raises before any stage starts, so Broadway.start_link/2 reports the error" do
+      assert_raise ArgumentError, ~r/required :subscription option not found/, fn ->
+        Producer.prepare_for_start(__MODULE__, broadway_opts(topics: ["t"]))
+      end
+    end
+
+    test "raises on a reserved :consumer_opts key" do
+      opts = broadway_opts(topics: ["t"], subscription: "s", consumer_opts: [flow_initial: 10])
+
+      assert_raise ArgumentError, ~r/:flow_initial cannot be set here/, fn ->
+        Producer.prepare_for_start(__MODULE__, opts)
+      end
+    end
+
+    test "raises on an invalid nested :consumer_opts value" do
+      opts = broadway_opts(topics: ["t"], subscription: "s", consumer_opts: [subscription_type: :Shared])
+
+      assert_raise ArgumentError, ~r/invalid value for :subscription_type option/, fn ->
+        Producer.prepare_for_start(__MODULE__, opts)
+      end
+    end
+
+    test "raises when the flow threshold is not less than the initial window" do
+      opts = broadway_opts(topics: ["t"], subscription: "s", flow_initial: 10, flow_threshold: 10)
+
+      assert_raise ArgumentError, ~r/flow_threshold \(10\) must be less than flow_initial \(10\)/, fn ->
+        Producer.prepare_for_start(__MODULE__, opts)
+      end
+    end
+
+    test "starts no children and returns the topology options unchanged" do
+      opts = broadway_opts(topics: ["t"], subscription: "s")
+
+      assert {[], ^opts} = Producer.prepare_for_start(__MODULE__, opts)
+    end
+
+    test "does not require the client to be running, which is the stage's own precondition" do
+      opts = broadway_opts(topics: ["t"], subscription: "s", client: :no_such_client)
+
+      assert {[], ^opts} = Producer.prepare_for_start(__MODULE__, opts)
+    end
+  end
+
   describe ":consumer_ready" do
     test "registers the worker with the window it granted itself" do
       assert {:noreply, [], new_state} =
