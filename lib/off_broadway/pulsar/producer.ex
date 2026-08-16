@@ -318,8 +318,21 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   def handle_info({:DOWN, _ref, :process, consumer_pid, _reason}, state) do
-    # Remove the old worker without disturbing a same-topic replacement.
-    {:noreply, [], %{state | consumers: Map.delete(state.consumers, consumer_pid)}}
+    # Entries from a dead worker can no longer be acknowledged; discard them and
+    # their permit markers.
+    buffer =
+      Enum.reject(state.buffer, fn
+        {:message, _msg, ^consumer_pid, _context} -> true
+        {:permits, ^consumer_pid, _consumed} -> true
+        _entry -> false
+      end)
+
+    {:noreply, [],
+     %{
+       state
+       | consumers: Map.delete(state.consumers, consumer_pid),
+         buffer: buffer
+     }}
   end
 
   defp dispatch_messages(%{buffer: buffer, demand: demand} = state) do
@@ -409,6 +422,7 @@ defmodule OffBroadway.Pulsar.Producer do
         %{state | consumers: Map.put(state.consumers, pid, {topic, new_outstanding})}
 
       {:error, reason} ->
+        # A timed-out call may still grant the permits, so retrying can over-credit the worker.
         Logger.error("Failed to refill flow window for #{topic}: #{inspect(reason)}")
         state
     end

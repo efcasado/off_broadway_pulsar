@@ -93,6 +93,25 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       assert state.consumers == %{replacement => {"topic", 10}}
     end
+
+    test "drops the dead worker's buffered entries and leaves the rest" do
+      {:ok, alive} = start_supervised({StubConsumer, self()})
+      dead = self()
+
+      buffer = [
+        {:message, @message, dead, @context},
+        {:message, @message, alive, @context},
+        {:permits, dead, 2}
+      ]
+
+      state = %{state() | buffer: buffer, demand: 0, consumers: %{dead => {"topic", 10}, alive => {"other", 10}}}
+
+      assert {:noreply, [], new_state} =
+               Producer.handle_info({:DOWN, make_ref(), :process, dead, :killed}, state)
+
+      assert new_state.buffer == [{:message, @message, alive, @context}]
+      refute Map.has_key?(new_state.consumers, dead)
+    end
   end
 
   describe "dispatch" do
