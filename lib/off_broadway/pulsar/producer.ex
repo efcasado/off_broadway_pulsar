@@ -125,17 +125,47 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Flow Control
 
+  Two budgets bound the pipeline, and they are not shaped the same way. Each consumer holds its
+  own permit window, bounding what the broker delivers into the producer's buffer. Demand is a
+  single per-stage counter: the stage keeps one buffer and one demand tally across all of its
+  consumers, and dispatches in arrival order regardless of which topic or partition a delivery
+  came from. Deliveries that arrive ahead of demand wait in that shared buffer.
+
   The `:flow_*` options replace the consumer's own automatic refills: the producer sets the consumer's
   `:flow_policy` to report what each delivery cost and grants the refills itself, sized to
   what Broadway has taken. Each worker still grants its full `:flow_initial` window when it
-  subscribes, independently of pipeline demand, so read-ahead is bounded by the permit window
-  rather than by demand; deliveries that arrive ahead of demand wait in the producer's buffer.
-  Processor demand is served from the window already granted, rather than triggering a flow
-  request of its own.
+  subscribes, independently of pipeline demand. Processor demand is served from the window
+  already granted, rather than triggering a flow request of its own. Permits are charged when
+  messages leave the buffer for the processors, not when they are acknowledged, so a slow
+  `c:Broadway.handle_message/3` does not hold the window closed. Because the buffer is shared,
+  a delivery is charged only once it reaches the head, so one consumer's refill can wait behind
+  another's undispatched messages; when demand is chronically short, the windows drain together
+  rather than independently.
 
   Each consumer keeps its own window — one per topic, and one per partition of a
   partitioned topic. With `producer: [concurrency: N]`, each producer has its own
-  consumers, and so its own windows.
+  consumers, and so its own windows. A refill is granted once the window falls to
+  `:flow_threshold` and adds `:flow_refill` on top of what is left, so a consumer's window peaks
+  at `max(flow_initial, flow_threshold + flow_refill)` and a stage's read-ahead is roughly that
+  times its consumer count. The defaults make the two halves equal, at 100 permits; raising
+  `:flow_refill` alone raises the ceiling well above `:flow_initial`.
+
+  Size that total against the pipeline's in-flight demand, bounded above by `max_demand` ×
+  processor concurrency (or `batch_size` when batching). Treat that as a ceiling rather than a
+  steady figure: GenStage reissues demand in `max_demand - min_demand` increments once a stage's
+  in-flight events fall to `:min_demand`, so outstanding demand oscillates between the two
+  instead of sitting at the maximum. With Broadway's default `:min_demand` of half `:max_demand`,
+  the average settles nearer three quarters of the ceiling — size to that order of magnitude, not
+  to an exact number.
+
+  A window smaller than that demand bounds ingress rate, not concurrency. Because permits are
+  charged at dispatch, each refill admits another delivery while earlier messages are still being
+  processed, so successive refills can fill all outstanding demand; sustained throughput is
+  roughly the window divided by the refill round-trip, and processors idle only once that falls
+  below what they can consume. Far above the demand, messages accumulate unacknowledged in the
+  producer's buffer, costing memory and counting against the broker's
+  `maxUnackedMessagesPerConsumer` limit, which stops delivery on shared subscriptions once
+  crossed.
 
   ## Consumer ownership
 
