@@ -4,7 +4,7 @@ defmodule OffBroadwayPulsar.MixProject do
   def project do
     [
       app: :off_broadway_pulsar,
-      version: "1.5.1",
+      version: "2.0.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
