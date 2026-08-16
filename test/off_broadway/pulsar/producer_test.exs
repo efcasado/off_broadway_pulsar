@@ -199,33 +199,23 @@ defmodule OffBroadway.Pulsar.ProducerTest do
   end
 
   describe "consumer ownership" do
-    test "stops when a known worker fails on an error the client will not retry" do
-      reason = {:ConsumerBusy, "Exclusive consumer is already connected"}
+    test "stops when the consumer Registry exits" do
+      monitor_ref = make_ref()
+      state = %{state() | registry_monitor: {self(), monitor_ref}}
 
-      assert {:stop, {:shutdown, {:consumer_terminal_error, "topic", ^reason}}, _state} =
-               Producer.handle_info({:DOWN, make_ref(), :process, self(), {:shutdown, reason}}, state())
+      assert {:stop, {:shutdown, {:consumer_registry_down, :default}}, _state} =
+               Producer.handle_info({:DOWN, monitor_ref, :process, self(), :shutdown}, state)
     end
 
-    test "keeps running when a worker it does not know stops terminally" do
-      state = %{state() | consumers: %{}}
+    test "stops when a consumer root exits normally" do
+      monitor_ref = make_ref()
+      state = %{state() | consumer_roots: %{self() => {"topic", monitor_ref}}}
 
-      assert {:noreply, [], new_state} =
-               Producer.handle_info(
-                 {:DOWN, make_ref(), :process, self(), {:shutdown, {:TopicNotFound, "gone"}}},
-                 state
-               )
-
-      assert new_state.consumers == %{}
+      assert {:stop, {:shutdown, {:consumer_gone, "topic"}}, _state} =
+               Producer.handle_info({:DOWN, monitor_ref, :process, self(), :normal}, state)
     end
 
-    test "keeps running when a worker crashes for a reason the client retries" do
-      assert {:noreply, [], new_state} =
-               Producer.handle_info({:DOWN, make_ref(), :process, self(), :broker_crashed}, state())
-
-      assert new_state.consumers == %{}
-    end
-
-    test "the health check leaves a registered consumer whose groups are all running alone" do
+    test "the health check leaves a running consumer alone" do
       %{root: root, state: state} = healthy_consumer()
 
       assert {:noreply, [], _state} = Producer.handle_info(:check_consumers, state)
@@ -235,55 +225,22 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     test "the health check stops when a consumer has a group the client gave up on" do
       %{root: root, state: state} = healthy_consumer()
 
-      # What a worker stopping with {:shutdown, terminal_reason} leaves behind: a group that
-      # exited cleanly and a root that keeps the child registered without a pid.
       [{_id, group, _type, _modules}] = Supervisor.which_children(root)
       :ok = Agent.stop(group)
 
       assert {:stop, {:shutdown, {:consumer_stopped, "topic"}}, _state} =
                Producer.handle_info(:check_consumers, state)
     end
-
-    test "the health check stops when the consumer's registration is no longer its own" do
-      %{state: state} = healthy_consumer()
-
-      # A replaced registry comes back under the same name and without the entries: the root
-      # is a supervisor, so it survives the registry it was linked to and never re-registers.
-      :ok = stop_supervised!(:registry)
-
-      start_supervised!({Registry, keys: :unique, name: Pulsar.Client.registry(:consumers, :health_client)},
-        id: :registry
-      )
-
-      assert {:stop, {:shutdown, {:consumer_unregistered, "topic"}}, _state} =
-               Producer.handle_info(:check_consumers, state)
-    end
-
-    test "the health check stops when a root is gone, however it went" do
-      %{state: state} = healthy_consumer()
-
-      # Pulsar.Consumer.stop/2 ends at Supervisor.stop/1, which exits :normal — a signal a
-      # stage that does not trap exits ignores, so the link never answers for this one.
-      :ok = stop_supervised!(:root)
-
-      assert {:stop, {:shutdown, {:consumer_gone, "topic"}}, _state} =
-               Producer.handle_info(:check_consumers, state)
-    end
   end
 
-  # A registered consumer root as Pulsar builds one: a supervisor named through the client's
-  # consumer registry, holding one group child per topic or partition.
   defp healthy_consumer do
-    client = :health_client
-    registry = Pulsar.Client.registry(:consumers, client)
-    start_supervised!({Registry, keys: :unique, name: registry}, id: :registry)
+    root = start_supervised!(consumer_root_spec())
+    monitor_ref = Process.monitor(root)
 
-    root = start_supervised!(consumer_root_spec(registry, "topic-sub-1"))
-
-    %{root: root, state: %{state() | consumer_roots: %{root => {"topic", "topic-sub-1"}}, client: client}}
+    %{root: root, state: %{state() | consumer_roots: %{root => {"topic", monitor_ref}}}}
   end
 
-  defp consumer_root_spec(registry, name) do
+  defp consumer_root_spec do
     group = %{
       id: {:topic, :non_partitioned},
       start: {Agent, :start_link, [fn -> :ok end]},
@@ -292,7 +249,7 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
     %{
       id: :root,
-      start: {Supervisor, :start_link, [[group], [strategy: :one_for_one, name: {:via, Registry, {registry, name}}]]},
+      start: {Supervisor, :start_link, [[group], [strategy: :one_for_one]]},
       type: :supervisor
     }
   end
@@ -302,6 +259,7 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       consumers: %{self() => {"topic", 10}},
       consumer_roots: %{},
       client: :default,
+      registry_monitor: nil,
       demand: 10,
       buffer: [],
       flow_initial: 10,

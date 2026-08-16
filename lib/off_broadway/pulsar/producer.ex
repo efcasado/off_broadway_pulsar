@@ -10,9 +10,8 @@ defmodule OffBroadway.Pulsar.Producer do
   The connection belongs to your application: supervise a `Pulsar.Client` and this
   producer attaches its consumers to it.
 
-  The consumers are owned by the producer stage rather than by the client: they are
-  started with `Pulsar.Consumer.start_link/1`, so the stage and the consumers feeding
-  it share a fate. See "Consumer ownership" in `start_link/1`.
+  Each producer stage owns the consumers it starts. See "Consumer ownership" in
+  `start_link/1`.
 
   See `start_link/1` for detailed configuration options.
   """
@@ -52,14 +51,10 @@ defmodule OffBroadway.Pulsar.Producer do
   @default_flow_threshold 50
   @default_flow_refill 50
 
-  # How often the stage checks on the consumers it owns. Neither failure it looks for sends
-  # this stage anything: a worker that fails terminally before its callback runs was never
-  # reported here, and a lost registration is silent by construction. See check_consumers/1.
+  # Terminal subscription errors can stop a group without stopping its root.
   @health_check_interval_ms 5_000
 
-  # A stage restarting because its client's consumer branch was replaced can arrive before
-  # the replacement registry does. Waiting briefly rebuilds against it instead of raising
-  # into Broadway's restart budget.
+  # A stage can restart before the client's replacement Registry is ready.
   @registry_wait_ms 2_000
   @registry_poll_ms 100
 
@@ -124,29 +119,20 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Consumer ownership
 
-  Consumers are started with `Pulsar.Consumer.start_link/1`, which links each consumer root
-  to the producer stage that started it. The link carries ownership in both directions:
+  Each producer stage starts one linked consumer root per topic. Pulsar supervises the
+  partition groups and workers below each root; Broadway supervises the stage. If the stage
+  or a root exits, Broadway restarts the stage and recreates all of its roots. Retryable
+  worker failures remain local to the Pulsar topology.
 
-  - The stage exits and its consumer roots exit with it, unsubscribing rather than
-    lingering as orphans that hold the subscription and deliver to a dead pid.
-  - A consumer root exits and the stage exits with it. Broadway restarts the stage, and
-    `init/1` recreates the consumers.
+  Consumer roots use the client's brokers and Registry, but are not children of its consumer
+  `DynamicSupervisor`. Consequently, `Pulsar.Client.consumers/1` does not list them. They can
+  still be resolved by name, although stopping one with `Pulsar.Consumer.stop/2` causes its
+  owning stage to recreate it. Stop the Broadway pipeline to stop its consumers permanently.
 
-  Three consequences are worth knowing:
-
-  - The consumers are supervised by Broadway's producer supervisor, not by the client's
-    consumer `DynamicSupervisor`, so `Pulsar.Client.consumers/1` does not list them. They
-    are still registered in the client's consumer registry, so `Pulsar.Consumer.stop/2`
-    and anything else resolving a consumer by name still finds them. Stopping one that way
-    is undone: the stage notices it has no consumer and is restarted with a new one.
-  - Failure that a consumer cannot recover from takes the pipeline down instead of leaving
-    it running and silent. A consumer worker that stops on a terminal subscribe error
-    (`:ConsumerBusy`, `:AuthorizationError`, `:TopicNotFound` and friends) stops the stage,
-    as does the client's consumer branch being replaced underneath it. Ordinary worker
-    crashes are left to the client's own supervision and do not disturb the stage.
-  - Because the client's consumer registry holds the consumer names, the stage stops when it
-    finds its own registration gone, so that `init/1` can re-register against the registry
-    that replaced it.
+  A terminal subscription error can leave a root alive with a stopped group. The stage
+  detects that state and restarts instead of remaining healthy with nothing to consume.
+  Replacing the client's consumer Registry likewise restarts the stage so its roots register
+  with the replacement.
 
   ## Message Metadata
 
@@ -261,8 +247,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
     ensure_client_running!(client)
 
-    # Validated before any consumer is started, so a misconfigured stage never subscribes
-    # only to raise on the option after it.
     flow_initial =
       opts
       |> Keyword.get(:flow_initial, @default_flow_initial)
@@ -283,9 +267,8 @@ defmodule OffBroadway.Pulsar.Producer do
             "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
     end
 
-    # The consumer names are registered here, so a stage that got ahead of its client's
-    # restart waits for the registry rather than raising into Broadway's restart budget.
-    await_consumer_registry!(client)
+    registry = await_consumer_registry!(client)
+    registry_monitor = Process.monitor(registry)
 
     # Each worker grants its own initial window on subscribe, so restarts and
     # late-discovered partitions come back with permits rather than waiting to be given
@@ -300,8 +283,7 @@ defmodule OffBroadway.Pulsar.Producer do
         flow_policy: {Callback, :report_permits, [self()]}
       )
 
-    # The unique name keeps multi-topic and producer concurrency > 1 apart. Each root is
-    # linked to this producer, which owns it; see "Consumer ownership".
+    # One linked root per topic; unique names also separate concurrent producer stages.
     consumer_roots =
       Map.new(topics, fn topic ->
         unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
@@ -315,7 +297,8 @@ defmodule OffBroadway.Pulsar.Producer do
             init_args: [self(), active_state_callback]
           )
 
-        {start_consumer!(topic_opts), {topic, unique_name}}
+        root = start_consumer!(topic_opts)
+        {root, {topic, Process.monitor(root)}}
       end)
 
     state = %{
@@ -323,10 +306,10 @@ defmodule OffBroadway.Pulsar.Producer do
       # Permits belong to a worker instance, so the worker is the key; the topic only
       # rides along for logging.
       consumers: %{},
-      # root pid => {topic, registered name}, for the consumers this stage owns. Linked, so
-      # a root that exits takes the stage with it before any monitor would report it.
+      # root pid => {topic, monitor_ref}
       consumer_roots: consumer_roots,
       client: client,
+      registry_monitor: {registry, registry_monitor},
       demand: 0,
       # An ordered mix of {:message, %Pulsar.Message{}, consumer_pid, context} and
       # {:permits, consumer_pid, consumed} markers. See take_dispatchable/3.
@@ -369,47 +352,34 @@ defmodule OffBroadway.Pulsar.Producer do
     dispatch_messages(%{state | buffer: state.buffer ++ [{:permits, consumer_pid, consumed}]})
   end
 
-  # A worker stopping with `{:shutdown, {code, message}}` hit an error the client refuses to
-  # retry: a subscription already taken, credentials that stay rejected, a topic that is not
-  # there. Its group is gone with it, so this stage has no consumer left for that topic.
-  def handle_info({:DOWN, _ref, :process, consumer_pid, {:shutdown, {code, _message} = reason}}, state)
-      when is_atom(code) do
-    case state.consumers do
-      %{^consumer_pid => {topic, _outstanding}} ->
-        Logger.error("Consumer for #{topic} stopped on a terminal error: #{inspect(reason)}")
+  def handle_info({:DOWN, monitor_ref, :process, registry, reason}, %{registry_monitor: {registry, monitor_ref}} = state) do
+    Logger.error("Consumer Registry for client #{inspect(state.client)} exited: #{inspect(reason)}; stopping")
 
-        {:stop, {:shutdown, {:consumer_terminal_error, topic, reason}}, state}
+    {:stop, {:shutdown, {:consumer_registry_down, state.client}}, state}
+  end
 
-      _no_such_consumer ->
-        forget_consumer(consumer_pid, state)
+  def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
+    case state.consumer_roots do
+      %{^pid => {topic, ^monitor_ref}} ->
+        Logger.error("Consumer root for #{topic} exited: #{inspect(reason)}; stopping")
+
+        {:stop, {:shutdown, {:consumer_gone, topic}}, state}
+
+      _worker_or_unknown ->
+        forget_consumer(pid, state)
     end
   end
 
-  def handle_info({:DOWN, _ref, :process, consumer_pid, _reason}, state) do
-    forget_consumer(consumer_pid, state)
-  end
-
   def handle_info(:check_consumers, state) do
-    schedule_health_check()
-
     case check_consumers(state) do
       :ok ->
+        schedule_health_check()
         {:noreply, [], state}
-
-      {:gone, topic} ->
-        Logger.error("Consumer for #{topic} is gone; stopping")
-
-        {:stop, {:shutdown, {:consumer_gone, topic}}, state}
 
       {:stopped, topic} ->
         Logger.error("Consumer for #{topic} has a stopped group and no worker left; stopping")
 
         {:stop, {:shutdown, {:consumer_stopped, topic}}, state}
-
-      {:unregistered, topic} ->
-        Logger.error("Consumer for #{topic} is no longer registered with client #{inspect(state.client)}; stopping")
-
-        {:stop, {:shutdown, {:consumer_unregistered, topic}}, state}
     end
   end
 
@@ -526,35 +496,11 @@ defmodule OffBroadway.Pulsar.Producer do
 
   defp schedule_health_check, do: Process.send_after(self(), :check_consumers, @health_check_interval_ms)
 
-  # Three failures the link does not report.
-  #
-  # A root that is gone. The link only carries an abnormal exit, and a root stopped through
-  # `Pulsar.Consumer.stop/2` exits `:normal`, which this stage ignores — so without this the
-  # stage would run on believing it has a consumer that no longer exists.
-  #
-  # The other two leave the root itself up, so no exit signal is sent at all.
-  #
-  # A group with no pid stopped and was not restarted, which the client only does for a
-  # failure retrying cannot fix. The worker that hit it is invisible to this stage when it
-  # failed before its callback ran — a terminal subscribe error always does.
-  #
-  # A name that no longer resolves to the root means the client's consumer registry was
-  # replaced under it: the registry links its registrants, but a root is a supervisor and
-  # ignores an exit from a link that is neither its parent nor its child, so it survives
-  # unregistered. Registration is not re-created, so the stage restarts to re-create it.
+  # Terminal subscription errors can stop a group without stopping its root.
   defp check_consumers(state) do
-    Enum.reduce_while(state.consumer_roots, :ok, fn {root, {topic, name}}, :ok ->
-      cond do
-        not Process.alive?(root) -> {:halt, {:gone, topic}}
-        stopped_group?(root) -> {:halt, {:stopped, topic}}
-        not registered?(name, root, state.client) -> {:halt, {:unregistered, topic}}
-        true -> {:cont, :ok}
-      end
+    Enum.reduce_while(state.consumer_roots, :ok, fn {root, {topic, _monitor_ref}}, :ok ->
+      if stopped_group?(root), do: {:halt, {:stopped, topic}}, else: {:cont, :ok}
     end)
-  end
-
-  defp registered?(name, root, client) do
-    Pulsar.Client.lookup(:consumers, name, client) == {:ok, root}
   end
 
   defp stopped_group?(root) do
@@ -566,13 +512,10 @@ defmodule OffBroadway.Pulsar.Producer do
       _child -> false
     end)
   catch
-    # A root busy starting children answers on the next round, and one that exited between
-    # the liveness check above and this call is caught by that check on the next round.
+    # Root exits are reported by its monitor.
     :exit, _reason -> false
   end
 
-  # Linked, so the roots go down with this stage rather than outliving it holding the
-  # subscription, and this stage goes down with a root rather than idling without consumers.
   defp start_consumer!(opts) do
     case Pulsar.Consumer.start_link(opts) do
       {:ok, consumer} ->
@@ -599,13 +542,14 @@ defmodule OffBroadway.Pulsar.Producer do
   defp await_consumer_registry!(client) do
     registry = Pulsar.Client.registry(:consumers, client)
 
-    if is_nil(await_registry(registry, @registry_wait_ms)) do
-      raise ArgumentError,
-            "Pulsar client #{inspect(client)} is running but its consumer registry " <>
-              "#{inspect(registry)} is not; the client is still starting up or shutting down"
-    end
+    case await_registry(registry, @registry_wait_ms) do
+      nil ->
+        raise "Pulsar client #{inspect(client)} is running but its consumer Registry " <>
+                "#{inspect(registry)} is not; the client is still starting up or shutting down"
 
-    :ok
+      pid ->
+        pid
+    end
   end
 
   defp await_registry(registry, remaining_ms) do

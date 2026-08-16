@@ -418,8 +418,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
       assert :ok = Broadway.stop(broadway)
 
-      # Not merely deregistered: the consumer is gone, so it holds no subscription and
-      # receives no delivery it can no longer acknowledge.
       assert_receive {:DOWN, ^ref, :process, ^root, _reason}, 5_000
       assert wait_until(fn -> consumer_roots(subscription) == [] end, 5_000)
     end
@@ -472,8 +470,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
       {:ok, _msg_id} = Pulsar.Producer.send(producer, "held")
       assert_receive {:message_handled, %Broadway.Message{data: "held"}, _processor}, 10_000
 
-      # The broker answers this one with :ConsumerBusy, which the client refuses to retry:
-      # the worker stops, its group with it, and the root stays up with nothing under it.
+      # :ConsumerBusy stops the group before its worker reports ready to the stage.
       {:ok, waiting} =
         DummyPipeline.start_link(
           test_pid: self(),
@@ -488,8 +485,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
       {:ok, _msg_id} = Pulsar.Producer.send(producer, "free")
 
-      # The stage notices it has no consumer, stops, and Broadway starts it again — so the
-      # subscription being taken is a delay rather than a pipeline that is up and silent.
       assert_receive {:message_handled, %Broadway.Message{data: "free"}, _processor}, 30_000
       assert Process.alive?(waiting)
 
@@ -516,8 +511,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
       assert [root] = consumer_roots(subscription)
 
-      # Pulsar.Consumer.stop/2 exits the root :normal, which the link does not carry to a
-      # stage that does not trap exits. Nothing but the stage's own check reports this.
+      # A monitor reports the normal exit that the link does not propagate.
       assert :ok = Pulsar.Consumer.stop(root, client: @client)
 
       replacement = wait_until(fn -> Enum.find(consumer_roots(subscription), &(&1 != root)) end, 20_000)
@@ -552,9 +546,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
       assert [root] = consumer_roots(subscription)
 
-      # The consumer branch is :rest_for_one, so its registry taking the branch with it is
-      # what a client restart looks like from here. A root is a supervisor, so it survives
-      # the registry that linked it — alive, unregistered, and reported by nothing.
+      # Replacing the Registry restarts the client's consumer branch.
       registry = Pulsar.Client.registry(:consumers, @client)
       :ok = Supervisor.stop(Process.whereis(registry), :shutdown)
       assert wait_until(fn -> Process.whereis(registry) end, 10_000)
@@ -571,9 +563,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     end
   end
 
-  # The stable roots this pipeline registered, read from the client's consumer registry:
-  # started with start_link/1, they are owned by their producer stage rather than by the
-  # client's DynamicSupervisor, so Pulsar.Client.consumers/1 does not list them.
   defp consumer_roots(subscription) do
     :consumers
     |> Pulsar.Client.registry(@client)
@@ -581,17 +570,14 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     |> Enum.filter(fn {name, _pid} -> String.contains?(name, subscription) end)
     |> Enum.map(fn {_name, pid} -> pid end)
   rescue
-    # The registry is being replaced; nothing is registered while it is away.
     ArgumentError -> []
   end
 
-  # Answers with whatever `fun` last returned, so a caller asserts on the result rather than
-  # on having waited.
   defp wait_until(fun, timeout) do
-    wait_until(fun, timeout, System.monotonic_time(:millisecond) + timeout)
+    do_wait_until(fun, System.monotonic_time(:millisecond) + timeout)
   end
 
-  defp wait_until(fun, timeout, deadline) do
+  defp do_wait_until(fun, deadline) do
     result = fun.()
 
     cond do
@@ -603,7 +589,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
       true ->
         Process.sleep(200)
-        wait_until(fun, timeout, deadline)
+        do_wait_until(fun, deadline)
     end
   end
 

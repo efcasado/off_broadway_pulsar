@@ -31,10 +31,6 @@ children = [
 ]
 ```
 
-The consumers themselves belong to the producer stage that started them. They are linked to
-it, so they go down with the pipeline rather than outliving it holding the subscription, and
-the stage goes down with them rather than running on with nothing to consume from.
-
 Then, assuming Pulsar is running on `localhost:6650`:
 
 ```elixir
@@ -95,6 +91,49 @@ producer: [
   concurrency: 1
 ]
 ```
+
+## Architecture and failure propagation
+
+Broadway and pulsar-elixir have different lifecycle boundaries. The `Pulsar.Client` owns
+shared connection infrastructure; each Broadway producer stage owns the consumers that feed
+it. A consumer root therefore uses the client's Registry and brokers without being a child of
+the client's consumer `DynamicSupervisor`.
+
+```mermaid
+flowchart TD
+  APP[Application supervisor]
+  CLIENT[Pulsar.Client]
+  PIPELINE[Broadway pipeline]
+  STAGE[Producer stage]
+  ROOT[Consumer root<br/>one per topic]
+  GROUP[Topic or partition group]
+  WORKER[Consumer worker]
+  REGISTRY[Consumer Registry]
+  BROKER[Broker processes]
+
+  APP --> CLIENT
+  APP --> PIPELINE
+  PIPELINE --> STAGE
+  STAGE <-->|linked ownership| ROOT
+  ROOT -->|supervises| GROUP
+  GROUP -->|supervises| WORKER
+  CLIENT --> REGISTRY
+  CLIENT --> BROKER
+  ROOT -. registers with .-> REGISTRY
+  WORKER -. communicates with .-> BROKER
+```
+
+| Event | Result |
+| --- | --- |
+| The producer stage exits | Its linked consumer roots stop |
+| A consumer root exits | Its link or monitor stops the stage; Broadway recreates it |
+| A retryable worker failure occurs | Pulsar's topology supervision restarts the worker |
+| A terminal subscription error stops a group | The stage's health check detects it and restarts |
+| The consumer Registry is replaced | Its monitor stops the stage so new roots register with the replacement |
+| A broker connection fails | The affected workers restart and reconnect through the client |
+
+Because the roots belong to their producer stages, `Pulsar.Client.consumers/1` does not list
+them. Stop the Broadway pipeline, rather than an individual root, to stop them permanently.
 
 ## Message metadata
 
