@@ -101,8 +101,8 @@ producer: [
 to attach to, the `:flow_*` options tune read-ahead, `:active_state_callback` observes
 failover transitions, and `:consumer_opts` is forwarded to `Pulsar.Consumer`.
 
-Options are validated when the stage starts, so a misconfigured pipeline fails at boot rather
-than at the first message. The
+Options are validated before any stage starts, so `Broadway.start_link/2` itself raises on a
+misconfigured pipeline rather than failing at the first message. The
 [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
 lists every option with its type and default.
 
@@ -122,8 +122,8 @@ refill semantics.
 
 `:consumer_opts` is forwarded to every consumer the stage starts.
 [`Pulsar.Consumer`](https://hexdocs.pm/pulsar_elixir/Pulsar.Consumer.html) documents and
-validates the keys it accepts, so they are deliberately not mirrored here. Setting the option
-replaces the default rather than merging into it.
+validates the keys it accepts, and applies its own defaults to whatever is left out, so they
+are deliberately not mirrored here.
 
 The keys the producer sets for itself — the topic, subscription, callback module, consumer
 count and flow settings — are rejected, each naming the option that does work instead: use
