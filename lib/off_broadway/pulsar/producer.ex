@@ -87,8 +87,12 @@ defmodule OffBroadway.Pulsar.Producer do
       flow control.
 
       `:batch_index_ack_enabled` is worth enabling for Broadway, which routinely completes
-      messages from one batch out of order, but it requires
-      `acknowledgmentAtBatchIndexLevelEnabled=true` on the broker.
+      messages from one batch out of order: without it a failed message takes its whole entry
+      back, and the siblings Broadway already handled are delivered again. It needs
+      `acknowledgmentAtBatchIndexLevelEnabled` on the broker, which is the Pulsar 4.2 default.
+
+      A nacked message is redelivered only when `:redelivery_interval` is set. Left unset, a
+      message the pipeline fails is not retried.
       """
     ],
     flow_initial: [
@@ -119,14 +123,12 @@ defmodule OffBroadway.Pulsar.Producer do
 
   #{NimbleOptions.docs(@opts_schema)}
 
-  Options are validated in `c:Broadway.Producer.prepare_for_start/2`, which runs once in the
-  Broadway process before any stage starts, so `Broadway.start_link/2` raises the
-  configuration error itself rather than leaving each stage to crash-loop under its supervisor
-  until the pipeline gives up. They are validated again in `c:GenStage.init/1`, which also
-  covers starting this producer outside a Broadway pipeline.
+  Options are validated in `c:Broadway.Producer.prepare_for_start/2`, which runs before any
+  stage starts, so `Broadway.start_link/2` raises the configuration error itself rather than
+  each stage crash-looping under its supervisor. They are validated again in
+  `c:GenStage.init/1`, which also covers starting this producer outside a Broadway pipeline.
 
-  That the client is running is checked per stage rather than once, since a stage that
-  restarts has to find it again.
+  The client is checked per stage instead, since a stage that restarts has to find it again.
 
   ## Flow Control
 
@@ -256,10 +258,8 @@ defmodule OffBroadway.Pulsar.Producer do
     GenStage.start_link(__MODULE__, opts)
   end
 
-  # Broadway runs this in its own process before starting the topology, so a configuration
-  # error is raised by Broadway.start_link/2 with the caller's stacktrace instead of being
-  # reported once per stage as a supervisor restart. It starts no children of its own: the
-  # consumers belong to the stages that feed on them, not to the pipeline.
+  # No children of its own: the consumers belong to the stages that feed on them, not to the
+  # pipeline.
   @impl Broadway.Producer
   def prepare_for_start(_module, broadway_opts) do
     {_producer_module, producer_opts} = broadway_opts[:producer][:module]
