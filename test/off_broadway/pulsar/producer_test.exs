@@ -63,6 +63,36 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       assert new_state.consumers == %{}
     end
+
+    test "removes a restarted worker without removing its same-topic replacement" do
+      wait = fn ->
+        receive do
+          :stop -> :ok
+        end
+      end
+
+      old_worker = spawn(wait)
+      replacement = spawn(wait)
+
+      on_exit(fn ->
+        send(old_worker, :stop)
+        send(replacement, :stop)
+      end)
+
+      assert {:noreply, [], state} =
+               Producer.handle_info({:consumer_ready, old_worker, @context}, %{state() | consumers: %{}})
+
+      assert {:noreply, [], state} =
+               Producer.handle_info({:consumer_ready, replacement, @context}, state)
+
+      Process.exit(old_worker, :kill)
+      assert_receive {:DOWN, ref, :process, ^old_worker, :killed}
+
+      assert {:noreply, [], state} =
+               Producer.handle_info({:DOWN, ref, :process, old_worker, :killed}, state)
+
+      assert state.consumers == %{replacement => {"topic", 10}}
+    end
   end
 
   describe "dispatch" do
@@ -128,6 +158,24 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       assert_receive {:send_flow, 5}
       assert %{^consumer => {"topic", 7}} = new_state.consumers
+    end
+
+    test "leaves a consumer that was not charged alone, however low its window" do
+      {:ok, charged} = start_supervised({StubConsumer, self()}, id: :charged)
+      {:ok, idle} = start_supervised({StubConsumer, self()}, id: :idle)
+
+      state = %{
+        state()
+        | consumers: %{charged => {"charged", 3}, idle => {"idle", 0}},
+          flow_threshold: 2,
+          flow_refill: 5
+      }
+
+      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, charged, 1}, state)
+
+      assert_receive {:send_flow, 5}
+      refute_receive {:send_flow, _}
+      assert %{^idle => {"idle", 0}} = new_state.consumers
     end
   end
 

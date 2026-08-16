@@ -239,7 +239,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
     assert_receive {:message_handled, %Broadway.Message{metadata: metadata}, _processor}, 10_000
 
-    # @topic is not partitioned, so :topic and :base_topic agree and there is no index.
     assert metadata.topic == @topic
     assert metadata.base_topic == @topic
     assert metadata.partition == nil
@@ -252,7 +251,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     assert metadata.event_time == nil
     assert metadata.redelivery_count == 0
 
-    # Workers are named after their group and their position in it.
     assert metadata.producer_name =~ ~r/^test_producer-\d+$/
 
     assert metadata.message_id

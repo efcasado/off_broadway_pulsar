@@ -114,10 +114,8 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:message_id` - Opaque id the acknowledger acks with. A *list* for a chunked message
   - `:message_id_string` - The id as Pulsar prints it (`ledgerId:entryId:partition`, plus the
     batch index when batched), for logging and correlation
-  - `:topic` - The topic consumed from; the concrete partition for a partitioned topic, which
-    makes it the right key for per-partition metrics
-  - `:base_topic` - The topic the consumer was configured with. Equal to `:topic` unless the
-    topic is partitioned; the one to route business logic on
+  - `:topic` - The resolved topic; the concrete partition for a partitioned topic
+  - `:base_topic` - The configured topic. Equal to `:topic` unless the topic is partitioned
   - `:partition` - The partition index, or `nil` when the topic is not partitioned
   - `:subscription` - The Pulsar subscription name
   - `:key` - The partition key, or `nil`
@@ -128,11 +126,10 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:event_time` - Application-set event time, or `nil` when unset
   - `:redelivery_count` - How many times the broker has redelivered the message
   - `:raw` - The underlying protocol structs, as a map of `:command`, `:metadata`,
-    `:single_metadata` and `:broker_metadata`. **Unstable**: its shape follows the wire
-    protocol. Reach for it only for details the fields above do not cover
+    `:single_metadata` and `:broker_metadata`. Its shape is unstable and follows the wire
+    protocol
 
-  Those fields come from `Pulsar.Message`, so they answer the same way whether a message
-  arrived on its own, inside a batch, or split across chunks.
+  These normalized fields are consistent for individual, batched and chunked messages.
 
   Two kinds of message never reach the pipeline: an incomplete chunked message, whose
   payload is a fragment, and one that failed validation. Both are logged, acknowledged
@@ -272,7 +269,7 @@ defmodule OffBroadway.Pulsar.Producer do
           init_args: [self(), active_state_callback]
         )
 
-      {:ok, _consumer} = Pulsar.Consumer.start(topic_opts)
+      start_consumer!(topic_opts)
     end)
 
     state = %{
@@ -321,8 +318,7 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   def handle_info({:DOWN, _ref, :process, consumer_pid, _reason}, state) do
-    # A replacement announces itself with a new PID, so the entry would otherwise linger
-    # and every refill would be sent to a dead worker.
+    # Remove the old worker without disturbing a same-topic replacement.
     {:noreply, [], %{state | consumers: Map.delete(state.consumers, consumer_pid)}}
   end
 
@@ -332,10 +328,7 @@ defmodule OffBroadway.Pulsar.Producer do
 
     Logger.debug("Dispatching #{length(broadway_messages)} messages, #{length(remaining)} remaining in buffer")
 
-    state =
-      %{state | buffer: remaining, demand: demand - length(broadway_messages)}
-      |> charge_permits(taken)
-      |> maybe_refill_flow()
+    state = charge_permits(%{state | buffer: remaining, demand: demand - length(broadway_messages)}, taken)
 
     {:noreply, broadway_messages, state}
   end
@@ -356,16 +349,28 @@ defmodule OffBroadway.Pulsar.Producer do
   defp take_dispatchable(buffer, _demand, taken), do: {Enum.reverse(taken), buffer}
 
   defp charge_permits(state, taken) do
-    consumers =
-      Enum.reduce(taken, state.consumers, fn
-        {:permits, pid, consumed}, acc ->
-          Map.replace_lazy(acc, pid, fn {topic, outstanding} -> {topic, max(outstanding - consumed, 0)} end)
+    Enum.reduce(taken, state, fn
+      {:permits, pid, consumed}, acc -> charge_consumer(acc, pid, consumed)
+      {:message, _, _, _}, acc -> acc
+    end)
+  end
 
-        {:message, _, _, _}, acc ->
-          acc
-      end)
+  # Only the charged window can cross the refill threshold; send_flow/2 is synchronous.
+  defp charge_consumer(state, pid, consumed) do
+    case state.consumers do
+      %{^pid => {topic, outstanding}} ->
+        outstanding = max(outstanding - consumed, 0)
+        state = %{state | consumers: Map.put(state.consumers, pid, {topic, outstanding})}
 
-    %{state | consumers: consumers}
+        if outstanding <= state.flow_threshold do
+          refill_consumer(state, pid, topic, outstanding)
+        else
+          state
+        end
+
+      _ ->
+        state
+    end
   end
 
   defp wrap_message(%Pulsar.Message{} = pulsar_message, consumer, context) do
@@ -391,34 +396,34 @@ defmodule OffBroadway.Pulsar.Producer do
     }
   end
 
-  defp maybe_refill_flow(state) do
-    consumers =
-      Enum.reduce(state.consumers, state.consumers, fn {pid, {topic, outstanding}}, acc ->
-        if outstanding <= state.flow_threshold do
-          refill_consumer(acc, pid, topic, outstanding, state.flow_refill)
-        else
-          acc
-        end
-      end)
-
-    %{state | consumers: consumers}
-  end
-
-  defp refill_consumer(consumers, pid, topic, outstanding, refill_amount) do
-    case Pulsar.Consumer.send_flow(pid, refill_amount) do
+  defp refill_consumer(state, pid, topic, outstanding) do
+    case Pulsar.Consumer.send_flow(pid, state.flow_refill) do
       :ok ->
-        new_outstanding = outstanding + refill_amount
+        new_outstanding = outstanding + state.flow_refill
 
         Logger.debug(
-          "Refilled flow window for #{topic}: #{refill_amount} permits " <>
+          "Refilled flow window for #{topic}: #{state.flow_refill} permits " <>
             "(outstanding: #{outstanding} → #{new_outstanding})"
         )
 
-        Map.put(consumers, pid, {topic, new_outstanding})
+        %{state | consumers: Map.put(state.consumers, pid, {topic, new_outstanding})}
 
       {:error, reason} ->
         Logger.error("Failed to refill flow window for #{topic}: #{inspect(reason)}")
-        consumers
+        state
+    end
+  end
+
+  defp start_consumer!(opts) do
+    case Pulsar.Consumer.start(opts) do
+      {:ok, consumer} ->
+        consumer
+
+      {:ok, consumer, _info} ->
+        consumer
+
+      other ->
+        raise "failed to start Pulsar consumer for #{Keyword.fetch!(opts, :topic)}: #{inspect(other)}"
     end
   end
 

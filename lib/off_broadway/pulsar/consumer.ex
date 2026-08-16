@@ -30,9 +30,7 @@ defmodule OffBroadway.Pulsar.Consumer do
     end
   end
 
-  # Flow policy, configured as {__MODULE__, :report_permits, [broadway_producer]}. Reports
-  # rather than grants: the producer refills as Broadway consumes, which is what stops the
-  # broker running further ahead than the pipeline has asked for.
+  # Report consumption to the producer; refills remain coupled to Broadway demand.
   def report_permits(%{consumed: 0}, _broadway_producer), do: :ok
 
   def report_permits(%{consumed: consumed}, broadway_producer) do
