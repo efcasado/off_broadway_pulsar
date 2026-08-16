@@ -105,14 +105,8 @@ lists every option with its type and default.
 
 ### Flow control
 
-Pulsar flow control and Broadway demand are separate budgets:
-
-| Budget | Scope | Controls |
-| --- | --- | --- |
-| Pulsar permits | Each topic or partition consumer | Broker read-ahead into the producer buffer |
-| Broadway demand | Each producer stage | Dispatch from that buffer to processors |
-
-Permits are charged when messages are dispatched, not when they are acknowledged. The
+`:flow_initial` permits are granted when each topic or partition consumer becomes ready. When
+the remaining permits reach `:flow_threshold`, the producer adds `:flow_refill` permits. The
 approximate maximum window per consumer is
 `max(flow_initial, flow_threshold + flow_refill)`; multiply it by the consumer count to
 estimate total read-ahead.
@@ -143,7 +137,22 @@ or fencing mechanism. The
 [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
 has the complete callback contract.
 
-## Architecture and failure propagation
+## Architecture
+
+### Back-pressure and buffering
+
+Pulsar flow control and Broadway demand are separate budgets:
+
+| Budget | Scope | Controls |
+| --- | --- | --- |
+| Pulsar permits | Each topic or partition consumer | Broker read-ahead into the producer buffer |
+| Broadway demand | Each producer stage | Dispatch from that buffer to processors |
+
+Each producer stage shares one Broadway demand counter and one message buffer across its
+consumers. Messages delivered ahead of demand wait in that buffer. Permits are charged when
+messages are dispatched, not when they are acknowledged.
+
+### Ownership and failure propagation
 
 Broadway and pulsar-elixir have different lifecycle boundaries. The `Pulsar.Client` owns
 shared connection infrastructure; each Broadway producer stage owns the consumers that feed
