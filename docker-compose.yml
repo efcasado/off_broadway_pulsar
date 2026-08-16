@@ -1,6 +1,6 @@
 services:
   pulsar:
-    image: apachepulsar/pulsar:4.0.2
+    image: apachepulsar/pulsar:4.2.4
     container_name: pulsar
     command: bin/pulsar standalone
     environment:
