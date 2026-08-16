@@ -263,7 +263,7 @@ defmodule ATProto.Pipeline do
       producer: [
         module:
           {OffBroadway.Pulsar.Producer,
-           topic: @topic, subscription: @subscription, consumer_opts: [initial_position: :earliest]},
+           topics: [@topic], subscription: @subscription, consumer_opts: [initial_position: :earliest]},
         concurrency: 2
       ],
       processors: [default: [concurrency: 4]],

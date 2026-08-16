@@ -78,7 +78,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "concurrency-sub",
         client: @client,
         producer_concurrency: 3,
@@ -103,7 +103,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "named-client-sub",
         client: @client,
         name: :named_client_pipeline,
@@ -119,7 +119,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "nack-sub",
         client: @client,
         handler: :nack,
@@ -150,7 +150,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "dlq-sub",
         client: @client,
         handler: :nack,
@@ -204,7 +204,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "permit-drain-sub",
         client: @client,
         handler: :nack,
@@ -232,7 +232,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "metadata-sub",
         client: @client,
         name: :metadata_pipeline,
@@ -300,7 +300,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: "shutdown-sub",
         client: @client,
         name: :shutdown_test_pipeline,
@@ -321,7 +321,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, first_pipeline} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: subscription,
         client: @client,
         name: :failover_active_pipeline,
@@ -343,7 +343,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, second_pipeline} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @topic,
+        topics: [@topic],
         subscription: subscription,
         client: @client,
         name: :failover_standby_pipeline,
@@ -364,7 +364,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     {:ok, pipeline} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: @partitioned_topic,
+        topics: [@partitioned_topic],
         subscription: subscription,
         client: @client,
         name: :failover_partition_callback_pipeline,
@@ -586,7 +586,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   end
 
   defp start_pipeline(name, topic, subscription, opts \\ []) do
-    defaults = [test_pid: self(), topic: topic, subscription: subscription, client: @client, name: name]
+    defaults = [test_pid: self(), topics: [topic], subscription: subscription, client: @client, name: name]
     DummyPipeline.start_link(Keyword.merge(defaults, opts))
   end
 

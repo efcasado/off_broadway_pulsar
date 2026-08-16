@@ -23,13 +23,59 @@ defmodule OffBroadway.Pulsar.ProducerTest do
   describe "init/1" do
     test "raises a helpful error when the client is not running" do
       assert_raise ArgumentError, ~r/Pulsar client :no_such_client is not running/, fn ->
-        Producer.init(topic: "t", subscription: "s", client: :no_such_client)
+        Producer.init(topics: ["t"], subscription: "s", client: :no_such_client)
       end
     end
 
-    test "raises when neither :topic nor :topics is given" do
-      assert_raise ArgumentError, "either :topic or :topics is required", fn ->
+    test "raises when :topics is not given" do
+      assert_raise ArgumentError, ~r/required :topics option not found/, fn ->
         Producer.init(subscription: "s")
+      end
+    end
+
+    test "raises when :topics is empty" do
+      assert_raise ArgumentError, ~r/expected a non-empty list of topic names, got: \[\]/, fn ->
+        Producer.init(topics: [], subscription: "s")
+      end
+    end
+
+    test "raises when :topics is not a list of strings" do
+      assert_raise ArgumentError, ~r/expected a non-empty list of topic names, got: "t"/, fn ->
+        Producer.init(topics: "t", subscription: "s")
+      end
+    end
+
+    test "raises when :subscription is missing" do
+      assert_raise ArgumentError, ~r/required :subscription option not found/, fn ->
+        Producer.init(topics: ["t"])
+      end
+    end
+
+    test "raises on an option of the wrong type" do
+      assert_raise ArgumentError, ~r/invalid value for :flow_initial option/, fn ->
+        Producer.init(topics: ["t"], subscription: "s", flow_initial: "100")
+      end
+    end
+
+    test "raises on a malformed :active_state_callback" do
+      assert_raise ArgumentError, ~r/invalid value for :active_state_callback option/, fn ->
+        Producer.init(topics: ["t"], subscription: "s", active_state_callback: {SomeModule, :handle})
+      end
+    end
+
+    test "accepts an explicit nil :active_state_callback, as when it comes from application env" do
+      assert_raise ArgumentError, ~r/Pulsar client :no_such_client is not running/, fn ->
+        Producer.init(topics: ["t"], subscription: "s", client: :no_such_client, active_state_callback: nil)
+      end
+    end
+
+    test "raises on a :consumer_opts key the producer sets itself" do
+      assert_raise ArgumentError, ~r/:consumer_count cannot be set here.+concurrency: N/, fn ->
+        Producer.init(topics: ["t"], subscription: "s", consumer_opts: [consumer_count: 4])
+      end
+
+      assert_raise ArgumentError, ~r/:flow_initial cannot be set here/, fn ->
+        Producer.init(topics: ["t"], subscription: "s", consumer_opts: [flow_initial: 10])
       end
     end
 
@@ -40,7 +86,7 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       })
 
       assert_raise ArgumentError, ~r/flow_threshold \(10\) must be less than flow_initial \(10\)/, fn ->
-        Producer.init(topic: "t", subscription: "s", client: :fake_client, flow_initial: 10, flow_threshold: 10)
+        Producer.init(topics: ["t"], subscription: "s", client: :fake_client, flow_initial: 10, flow_threshold: 10)
       end
     end
   end

@@ -43,7 +43,7 @@ defmodule OffBroadwayPulsar.Integration.PartitionDiscoveryTest do
     {:ok, _broadway} =
       DummyPipeline.start_link(
         test_pid: self(),
-        topic: topic,
+        topics: [topic],
         subscription: subscription,
         client: @client,
         name: String.to_atom("partition_discovery_pipeline_#{test_id}"),
