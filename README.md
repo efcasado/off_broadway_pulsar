@@ -92,6 +92,44 @@ producer: [
 ]
 ```
 
+## Configuration
+
+Options accepted by the producer:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `:topic` / `:topics` | — | Topic, or list of topics, to consume from. One consumer per topic; one of the two is required |
+| `:subscription` | — | Subscription name (required) |
+| `:client` | `:default` | Name of the running `Pulsar.Client` to attach to |
+| `:consumer_opts` | `[subscription_type: :shared]` | Options forwarded to `Pulsar.Consumer`, applied to every topic |
+| `:flow_initial` | `100` | Permits each consumer grants when it subscribes |
+| `:flow_threshold` | `50` | Refill once outstanding permits fall to this level; must be less than `:flow_initial` |
+| `:flow_refill` | `50` | Permits granted per refill |
+| `:active_state_callback` | `nil` | `{module, function, extra_args}` invoked on active/passive transitions of `:failover` consumers |
+
+The `:flow_*` options replace the consumer's own automatic refills. Each consumer grants its
+full `:flow_initial` window as soon as it subscribes — before Broadway has asked for
+anything — and the producer grants every refill after that, sized to what Broadway has
+actually taken. Read-ahead is therefore bounded by the permit window rather than by pipeline
+demand: messages delivered ahead of demand wait in the producer's buffer. Each consumer
+keeps its own window — one per topic, and one per partition of a partitioned topic — and
+each producer stage has its own consumers, so size `:flow_initial` with that total in mind.
+
+`:consumer_opts` forwards a fixed set of keys (subscription type, initial position, dead
+letter policy, chunking and schema settings, and others); anything outside that set is
+dropped. Setting it replaces the default rather than merging into it. The consumer's own
+`:consumer_count` and `:flow_*` options are not honored here — use Broadway's
+`producer: [concurrency: N]` and the `:flow_*` options above.
+
+`:active_state_callback` is invoked as `apply(module, function, [metadata | extra_args])`,
+where `metadata` carries the active state, the topic or partition, the subscription and the
+consumer pid. It runs synchronously in the Pulsar consumer, so it should return promptly.
+Reports are best-effort observations — they may repeat, and they are not a distributed lock
+or fencing mechanism.
+
+See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
+for the full option list and the complete callback contract.
+
 ## Architecture and failure propagation
 
 Broadway and pulsar-elixir have different lifecycle boundaries. The `Pulsar.Client` owns
@@ -155,32 +193,6 @@ end
 
 See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#module-message-metadata)
 for the full list.
-
-## Failover active state
-
-For `:failover` subscriptions, `off_broadway_pulsar` reports when an underlying
-Pulsar consumer becomes active or passive through an optional callback. Configure
-the callback as a `{module, function, extra_args}` tuple:
-
-```elixir
-producer: [
-  module: {OffBroadway.Pulsar.Producer,
-    topic: "persistent://public/default/my-topic",
-    subscription: "my-subscription",
-    consumer_opts: [subscription_type: :failover],
-    active_state_callback: {MyApp.FailoverObserver, :handle_active_state, []}
-  },
-  concurrency: 1
-]
-```
-
-The callback receives a metadata map (the active state, the topic or partition,
-the subscription, and the consumer pid) followed by any configured extra
-arguments. Reports are best-effort observations — they may repeat, and they are
-not a distributed lock or fencing mechanism.
-
-See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
-for the complete callback contract.
 
 ## Examples
 
