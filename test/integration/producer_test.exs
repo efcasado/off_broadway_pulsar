@@ -13,9 +13,11 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   @partitioned_topic "persistent://public/default/broadway-failover-partitioned"
   @ownership_topic "persistent://public/default/broadway-consumer-ownership"
   @exclusive_topic "persistent://public/default/broadway-exclusive-ownership"
+  @restart_topic "persistent://public/default/broadway-worker-restart"
   @partition_count 2
   @message_count 100
   @multi_topic_message_count 20
+  @restart_message_count 200
 
   setup_all do
     alias OffBroadwayPulsar.Test.Support.System
@@ -26,6 +28,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     :ok = System.create_partitioned_topic(@partitioned_topic, @partition_count)
     :ok = System.create_topic(@ownership_topic)
     :ok = System.create_topic(@exclusive_topic)
+    :ok = System.create_topic(@restart_topic)
 
     {:ok, _client_pid} =
       Pulsar.Client.start_link(
@@ -583,6 +586,77 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
       assert :ok = Broadway.stop(broadway)
     end
+
+    @tag :capture_log
+    test "a worker killed mid-drain leaves no message unconsumed" do
+      subscription = "worker-restart-sub"
+      producer = start_ready_producer(:worker_restart_producer, @restart_topic)
+
+      {:ok, broadway} =
+        start_pipeline(:worker_restart_pipeline, @restart_topic, subscription, handler: &slow_handler/2)
+
+      assert [root] = consumer_roots(subscription)
+      assert :ok = Pulsar.Consumer.await_ready(root)
+      assert [worker] = consumer_workers(root)
+
+      payloads = Enum.map(1..@restart_message_count, &"restart-#{&1}")
+      for payload <- payloads, do: {:ok, _msg_id} = Pulsar.Producer.send(producer, payload)
+
+      # Kill with the drain in flight, so the pipeline holds messages that name a worker it
+      # can no longer acknowledge against.
+      seen = collect_payloads(MapSet.new(), 10, 30_000)
+      assert MapSet.size(seen) >= 10
+      Process.exit(worker, :kill)
+
+      replacement = wait_until(fn -> Enum.find(consumer_workers(root), &(&1 != worker)) end, 20_000)
+      assert is_pid(replacement)
+
+      seen = collect_payloads(seen, @restart_message_count, 60_000)
+      assert MapSet.to_list(MapSet.difference(MapSet.new(payloads), seen)) == []
+
+      assert :ok = Broadway.stop(broadway)
+    end
+  end
+
+  defp slow_handler(message, context) do
+    # Paces the drain so the kill lands while messages are still in flight.
+    Process.sleep(5)
+    send(context.test_pid, {:message_handled, message.data})
+    message
+  end
+
+  defp collect_payloads(seen, target, timeout) do
+    do_collect_payloads(seen, target, System.monotonic_time(:millisecond) + timeout)
+  end
+
+  defp do_collect_payloads(seen, target, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if MapSet.size(seen) >= target or remaining <= 0 do
+      seen
+    else
+      receive do
+        {:message_handled, payload} -> do_collect_payloads(MapSet.put(seen, payload), target, deadline)
+      after
+        remaining -> seen
+      end
+    end
+  end
+
+  defp consumer_workers(root) do
+    root
+    |> Supervisor.which_children()
+    |> Enum.flat_map(fn
+      {_id, group, :supervisor, _modules} when is_pid(group) -> group_workers(group)
+      _child -> []
+    end)
+  end
+
+  defp group_workers(group) do
+    Enum.flat_map(Supervisor.which_children(group), fn
+      {_id, worker, _type, _modules} when is_pid(worker) -> [worker]
+      _child -> []
+    end)
   end
 
   defp start_pipeline(name, topic, subscription, opts \\ []) do

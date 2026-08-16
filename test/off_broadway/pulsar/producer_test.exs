@@ -260,25 +260,52 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     test "the health check stops when a consumer has a group the client gave up on" do
       %{root: root, state: state} = healthy_consumer()
 
-      [{_id, group, _type, _modules}] = Supervisor.which_children(root)
-      :ok = Agent.stop(group)
+      :ok = Supervisor.stop(group(root))
 
       assert {:stop, {:shutdown, {:consumer_stopped, "topic"}}, _state} =
                Producer.handle_info(:check_consumers, state)
     end
+
+    test "the health check stops when a group is up but its last worker was not replaced" do
+      %{root: root, state: state} = healthy_consumer()
+
+      :ok = Agent.stop(worker(root))
+
+      assert Process.alive?(group(root))
+
+      assert {:stop, {:shutdown, {:consumer_stopped, "topic"}}, _state} =
+               Producer.handle_info(:check_consumers, state)
+    end
+
+    test "the health check leaves a group alone while one of its workers is still up" do
+      %{root: root, state: state} = healthy_consumer(worker_count: 2)
+
+      [{_id, stopped, _type, _modules} | _kept] = Supervisor.which_children(group(root))
+      :ok = Agent.stop(stopped)
+
+      assert {:noreply, [], _state} = Producer.handle_info(:check_consumers, state)
+    end
   end
 
-  defp healthy_consumer do
-    root = start_supervised!(consumer_root_spec())
+  defp healthy_consumer(opts \\ []) do
+    root = start_supervised!(consumer_root_spec(Keyword.get(opts, :worker_count, 1)))
     monitor_ref = Process.monitor(root)
 
     %{root: root, state: %{state() | consumer_roots: %{root => {"topic", monitor_ref}}}}
   end
 
-  defp consumer_root_spec do
+  # Mirrors the shape the stage inspects: a root of per-topic groups, each of them a
+  # supervisor of workers.
+  defp consumer_root_spec(worker_count) do
+    workers =
+      for index <- 1..worker_count do
+        %{id: {:worker, index}, start: {Agent, :start_link, [fn -> :ok end]}, restart: :transient}
+      end
+
     group = %{
       id: {:topic, :non_partitioned},
-      start: {Agent, :start_link, [fn -> :ok end]},
+      start: {Supervisor, :start_link, [workers, [strategy: :one_for_one]]},
+      type: :supervisor,
       restart: :transient
     }
 
@@ -287,6 +314,16 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       start: {Supervisor, :start_link, [[group], [strategy: :one_for_one]]},
       type: :supervisor
     }
+  end
+
+  defp group(root) do
+    [{_id, group, :supervisor, _modules}] = Supervisor.which_children(root)
+    group
+  end
+
+  defp worker(root) do
+    [{_id, worker, _type, _modules}] = Supervisor.which_children(group(root))
+    worker
   end
 
   defp state do

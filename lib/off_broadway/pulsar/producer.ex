@@ -151,8 +151,13 @@ defmodule OffBroadway.Pulsar.Producer do
   owns them by pid, so replacing the client's consumer Registry does not affect them, although
   their former names no longer resolve. Stop the Broadway pipeline to stop them permanently.
 
-  A terminal subscription error can leave a root alive with a stopped group. The stage
-  detects that state and restarts instead of remaining healthy with nothing to consume.
+  A terminal subscription error can leave a root alive with a stopped group, and a worker that
+  exits normally is not replaced, leaving a group alive with nothing consuming. The stage
+  detects both and restarts instead of remaining healthy with nothing to consume.
+
+  A worker that is replaced is not one of those cases. The replacement registers under a new
+  pid and the broker returns whatever the old worker left unacknowledged to it, so messages
+  still in the pipeline under the old pid are dropped when they come to be acknowledged.
 
   ## Message Metadata
 
@@ -365,7 +370,7 @@ defmodule OffBroadway.Pulsar.Producer do
         {:noreply, [], state}
 
       {:stopped, topic} ->
-        Logger.error("Consumer for #{topic} has a stopped group and no worker left; stopping")
+        Logger.error("Consumer for #{topic} has a group with no worker left; stopping")
 
         {:stop, {:shutdown, {:consumer_stopped, topic}}, state}
     end
@@ -491,7 +496,8 @@ defmodule OffBroadway.Pulsar.Producer do
 
   defp schedule_health_check, do: Process.send_after(self(), :check_consumers, @health_check_interval_ms)
 
-  # Terminal subscription errors can stop a group without stopping its root.
+  # Terminal subscription errors can stop a group without stopping its root, and a worker that
+  # exits normally is not replaced, so a group can also be up with nothing left consuming.
   defp check_consumers(state) do
     Enum.reduce_while(state.consumer_roots, :ok, fn {root, {topic, _monitor_ref}}, :ok ->
       if stopped_group?(root), do: {:halt, {:stopped, topic}}, else: {:cont, :ok}
@@ -502,13 +508,25 @@ defmodule OffBroadway.Pulsar.Producer do
     root
     |> Supervisor.which_children()
     |> Enum.any?(fn
-      {{:topic, :non_partitioned}, :undefined, _type, _modules} -> true
-      {{:partition, _index}, :undefined, _type, _modules} -> true
+      {{:topic, :non_partitioned}, group, :supervisor, _modules} -> group_stopped?(group)
+      {{:partition, _index}, group, :supervisor, _modules} -> group_stopped?(group)
       _child -> false
     end)
   catch
     # Root exits are reported by its monitor.
     :exit, _reason -> false
+  end
+
+  defp group_stopped?(:undefined), do: true
+  defp group_stopped?(group) when is_pid(group), do: no_live_worker?(group)
+  defp group_stopped?(_restarting), do: false
+
+  # A group the client has not populated yet reports no children at all.
+  defp no_live_worker?(group) do
+    case Supervisor.which_children(group) do
+      [] -> false
+      workers -> Enum.all?(workers, &match?({_id, :undefined, _type, _modules}, &1))
+    end
   end
 
   defp start_consumer!(opts) do
