@@ -19,6 +19,9 @@ def deps do
 end
 ```
 
+Upgrading from 1.x? See [Upgrading to 2.0](docs/upgrading_to_2.0.md) — 2.0 changes how the
+connection is configured, renames the subscription type atoms and reshapes message metadata.
+
 ## Quick Start
 
 Supervise a `Pulsar.Client` alongside your pipeline — the producer attaches its consumers
