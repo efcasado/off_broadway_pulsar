@@ -345,6 +345,41 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
   end
 
+  describe "prepare_for_draining/1" do
+    test "marks the stage as draining without emitting anything" do
+      assert {:noreply, [], new_state} = Producer.prepare_for_draining(state())
+
+      assert new_state.draining
+    end
+
+    test "no more permits are granted once draining" do
+      {:ok, consumer} = start_supervised({StubConsumer, self()})
+
+      state = %{
+        state()
+        | consumers: %{consumer => {"topic", 3}},
+          flow_threshold: 2,
+          flow_refill: 5,
+          draining: true
+      }
+
+      assert {:noreply, [], new_state} = Producer.handle_info({:permits_consumed, consumer, 1}, state)
+
+      refute_receive {:send_flow, _permits}
+      assert %{^consumer => {"topic", 2}} = new_state.consumers
+    end
+
+    test "the health check does not stop a stage that is already shutting down" do
+      %{root: root, state: state} = healthy_consumer()
+
+      :ok = Agent.stop(worker(root))
+
+      draining = %{state | draining: true}
+
+      assert {:noreply, [], ^draining} = Producer.handle_info(:check_consumers, draining)
+    end
+  end
+
   describe "unexpected messages" do
     test "are ignored rather than taking the stage and its consumer roots down" do
       assert {:noreply, [], new_state} = Producer.handle_info(:unexpected, state())
@@ -409,7 +444,8 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       buffer: :queue.new(),
       flow_initial: 10,
       flow_threshold: 2,
-      flow_refill: 5
+      flow_refill: 5,
+      draining: false
     }
   end
 end
