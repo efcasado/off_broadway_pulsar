@@ -137,7 +137,8 @@ defmodule OffBroadway.Pulsar.Producer do
   - The consumers are supervised by Broadway's producer supervisor, not by the client's
     consumer `DynamicSupervisor`, so `Pulsar.Client.consumers/1` does not list them. They
     are still registered in the client's consumer registry, so `Pulsar.Consumer.stop/2`
-    and anything else resolving a consumer by name still finds them.
+    and anything else resolving a consumer by name still finds them. Stopping one that way
+    is undone: the stage notices it has no consumer and is restarted with a new one.
   - Failure that a consumer cannot recover from takes the pipeline down instead of leaving
     it running and silent. A consumer worker that stops on a terminal subscribe error
     (`:ConsumerBusy`, `:AuthorizationError`, `:TopicNotFound` and friends) stops the stage,
@@ -395,6 +396,11 @@ defmodule OffBroadway.Pulsar.Producer do
       :ok ->
         {:noreply, [], state}
 
+      {:gone, topic} ->
+        Logger.error("Consumer for #{topic} is gone; stopping")
+
+        {:stop, {:shutdown, {:consumer_gone, topic}}, state}
+
       {:stopped, topic} ->
         Logger.error("Consumer for #{topic} has a stopped group and no worker left; stopping")
 
@@ -520,7 +526,13 @@ defmodule OffBroadway.Pulsar.Producer do
 
   defp schedule_health_check, do: Process.send_after(self(), :check_consumers, @health_check_interval_ms)
 
-  # Two failures a linked root does not report, because the root stays up through both.
+  # Three failures the link does not report.
+  #
+  # A root that is gone. The link only carries an abnormal exit, and a root stopped through
+  # `Pulsar.Consumer.stop/2` exits `:normal`, which this stage ignores — so without this the
+  # stage would run on believing it has a consumer that no longer exists.
+  #
+  # The other two leave the root itself up, so no exit signal is sent at all.
   #
   # A group with no pid stopped and was not restarted, which the client only does for a
   # failure retrying cannot fix. The worker that hit it is invisible to this stage when it
@@ -533,9 +545,7 @@ defmodule OffBroadway.Pulsar.Producer do
   defp check_consumers(state) do
     Enum.reduce_while(state.consumer_roots, :ok, fn {root, {topic, name}}, :ok ->
       cond do
-        # A root that exited has an exit signal on its way here already; the link answers
-        # for it, and this pass has nothing useful to say about it.
-        not Process.alive?(root) -> {:cont, :ok}
+        not Process.alive?(root) -> {:halt, {:gone, topic}}
         stopped_group?(root) -> {:halt, {:stopped, topic}}
         not registered?(name, root, state.client) -> {:halt, {:unregistered, topic}}
         true -> {:cont, :ok}
@@ -556,8 +566,8 @@ defmodule OffBroadway.Pulsar.Producer do
       _child -> false
     end)
   catch
-    # A root busy starting children answers on the next round, and one that is gone has
-    # already taken this stage with it through the link.
+    # A root busy starting children answers on the next round, and one that exited between
+    # the liveness check above and this call is caught by that check on the next round.
     :exit, _reason -> false
   end
 

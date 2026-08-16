@@ -259,11 +259,15 @@ defmodule OffBroadway.Pulsar.ProducerTest do
                Producer.handle_info(:check_consumers, state)
     end
 
-    test "the health check tolerates a root that is already gone" do
+    test "the health check stops when a root is gone, however it went" do
       %{state: state} = healthy_consumer()
+
+      # Pulsar.Consumer.stop/2 ends at Supervisor.stop/1, which exits :normal — a signal a
+      # stage that does not trap exits ignores, so the link never answers for this one.
       :ok = stop_supervised!(:root)
 
-      assert {:noreply, [], _state} = Producer.handle_info(:check_consumers, state)
+      assert {:stop, {:shutdown, {:consumer_gone, "topic"}}, _state} =
+               Producer.handle_info(:check_consumers, state)
     end
   end
 

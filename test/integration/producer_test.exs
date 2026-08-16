@@ -497,6 +497,39 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     end
 
     @tag :capture_log
+    test "a consumer stopped through the client is rebuilt by its stage" do
+      subscription = "consumer-stop-sub"
+
+      {:ok, producer} =
+        Pulsar.Producer.start_link(topic: @ownership_topic, client: @client, name: :consumer_stop_producer)
+
+      :ok = Pulsar.Producer.await_ready(producer)
+
+      {:ok, broadway} =
+        DummyPipeline.start_link(
+          test_pid: self(),
+          topic: @ownership_topic,
+          subscription: subscription,
+          client: @client,
+          name: :consumer_stop_pipeline
+        )
+
+      assert [root] = consumer_roots(subscription)
+
+      # Pulsar.Consumer.stop/2 exits the root :normal, which the link does not carry to a
+      # stage that does not trap exits. Nothing but the stage's own check reports this.
+      assert :ok = Pulsar.Consumer.stop(root, client: @client)
+
+      replacement = wait_until(fn -> Enum.find(consumer_roots(subscription), &(&1 != root)) end, 20_000)
+      assert is_pid(replacement)
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "rebuilt")
+      assert_receive {:message_handled, %Broadway.Message{data: "rebuilt"}, _processor}, 10_000
+
+      assert :ok = Broadway.stop(broadway)
+    end
+
+    @tag :capture_log
     test "a pipeline rebuilds its consumers when the client's consumer registry is replaced" do
       subscription = "registry-replacement-sub"
 
