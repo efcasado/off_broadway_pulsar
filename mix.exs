@@ -21,6 +21,7 @@ defmodule OffBroadwayPulsar.MixProject do
         main: "OffBroadway.Pulsar.Producer",
         extras: [
           "README.md",
+          "CHANGELOG.md",
           "docs/upgrading_to_2.0.md"
         ],
         groups_for_extras: [
