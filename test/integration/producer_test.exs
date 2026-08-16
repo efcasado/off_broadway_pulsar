@@ -448,6 +448,38 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
       assert :ok = Broadway.stop(broadway)
     end
 
+    test "a normally stopped producer stage does not leave its consumer root behind" do
+      subscription = "normal-producer-stop-sub"
+      producer = start_ready_producer(:normal_producer_stop_producer, @ownership_topic)
+
+      {:ok, broadway} =
+        start_pipeline(:normal_producer_stop_pipeline, @ownership_topic, subscription)
+
+      assert [root] = consumer_roots(subscription)
+      root_ref = Process.monitor(root)
+
+      [producer_name] = Broadway.producer_names(:normal_producer_stop_pipeline)
+      stage = GenServer.whereis(producer_name)
+      assert is_pid(stage)
+      stage_ref = Process.monitor(stage)
+
+      assert :ok = GenStage.stop(stage)
+      assert_receive {:DOWN, ^stage_ref, :process, ^stage, :normal}, 5_000
+      assert_receive {:DOWN, ^root_ref, :process, ^root, :normal}, 5_000
+
+      replacement_stage = wait_for_replacement_process(producer_name, stage, 5_000)
+      replacement_root = wait_for_replacement_root(subscription, root, 20_000)
+      assert is_pid(replacement_stage)
+      assert is_pid(replacement_root)
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "after normal restart")
+
+      assert_receive {:message_handled, %Broadway.Message{data: "after normal restart"}, _processor},
+                     10_000
+
+      assert :ok = Broadway.stop(broadway)
+    end
+
     test "each producer stage owns its own consumers" do
       subscription = "ownership-concurrency-sub"
 

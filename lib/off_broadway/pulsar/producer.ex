@@ -366,6 +366,13 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
+  @impl GenStage
+  def terminate(_reason, state) do
+    Enum.each(state.consumer_roots, fn {root, _metadata} ->
+      Pulsar.Consumer.stop(root)
+    end)
+  end
+
   defp forget_consumer(consumer_pid, state) do
     # Entries from a dead worker can no longer be acknowledged; discard them and
     # their permit markers.
