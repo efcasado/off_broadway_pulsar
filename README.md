@@ -181,3 +181,16 @@ not a distributed lock or fencing mechanism.
 
 See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
 for the complete callback contract.
+
+## Examples
+
+The `examples/` directory contains self-contained, end-to-end scripts. With a local
+Pulsar running (`make up`), run them with plain `elixir`:
+
+- `examples/atproto.exs` — consumes the public [AT Protocol feed](https://github.com/bluesky-social/jetstream) over a websocket,
+republishes every event to Pulsar, and computes live stream statistics (posting activity, languages, trending hashtags, most liked/reposted posts).
+
+```sh
+make up
+elixir examples/atproto.exs
+```
