@@ -390,6 +390,12 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
+  def handle_info(message, state) do
+    Logger.warning("Producer received an unexpected message: #{inspect(message)}")
+
+    {:noreply, [], state}
+  end
+
   @impl GenStage
   def terminate(_reason, state) do
     Enum.each(state.consumer_roots, fn {root, _metadata} ->
