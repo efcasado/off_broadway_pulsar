@@ -23,33 +23,91 @@ defmodule OffBroadway.Pulsar.Producer do
 
   require Logger
 
-  @supported_consumer_opts [
-    :subscription_type,
-    :initial_position,
-    :durable,
-    :force_create_topic,
-    :start_message_id,
-    :start_timestamp,
-    :redelivery_interval,
-    :dead_letter_policy,
-    :startup_delay_ms,
-    :startup_jitter_ms,
-    :max_pending_chunked_messages,
-    :expire_incomplete_chunked_message_after,
-    :chunk_cleanup_interval,
-    :read_compacted,
-    :batch_index_ack_enabled,
-    :schema,
-    :partition_discovery_interval_ms
-  ]
-
   @default_consumer_opts [
     subscription_type: :shared
   ]
 
-  @default_flow_initial 100
-  @default_flow_threshold 50
-  @default_flow_refill 50
+  # Keys the producer sets on every consumer it starts. A value given here would be silently
+  # discarded by the merge below, or would break the producer's own flow accounting.
+  @reserved_consumer_opts [
+    client: "it comes from the producer's own :client",
+    topic: "it comes from the producer's :topics",
+    subscription_name: "it comes from the producer's :subscription",
+    callback_module: "the producer supplies its own callback module",
+    init_args: "the producer supplies its own init args",
+    name: "consumer names are generated per producer stage",
+    consumer_count: "use Broadway's producer: [concurrency: N]",
+    flow_policy: "the producer grants refills itself",
+    flow_initial: "use the producer's own :flow_initial",
+    flow_threshold: "use the producer's own :flow_threshold",
+    flow_refill: "use the producer's own :flow_refill"
+  ]
+
+  @reserved_keys_doc @reserved_consumer_opts |> Keyword.keys() |> Enum.map_join(", ", &"`#{inspect(&1)}`")
+
+  @opts_schema [
+    client: [
+      type: :atom,
+      default: :default,
+      doc: """
+      Name of the `Pulsar.Client` to attach to. The client must already be running; see
+      "Starting a client" below.
+      """
+    ],
+    topics: [
+      type: {:custom, __MODULE__, :validate_topics, []},
+      required: true,
+      doc: """
+      The Pulsar topics to consume from, as a non-empty list of strings. One consumer is
+      started per topic.
+      """
+    ],
+    subscription: [
+      type: :string,
+      required: true,
+      doc: "The subscription name."
+    ],
+    active_state_callback: [
+      type: {:or, [:mfa, {:in, [nil]}]},
+      default: nil,
+      doc: """
+      A `{module, function, extra_args}` tuple that receives active/passive state changes for
+      Failover consumers. `nil` disables it. See "Failover Active State" below.
+      """
+    ],
+    consumer_opts: [
+      type: :keyword_list,
+      default: @default_consumer_opts,
+      doc: """
+      Options forwarded to `Pulsar.Consumer.start_link/1`, applied to every topic. They are
+      documented and validated by `Pulsar.Consumer`, which rejects unknown keys. Setting this
+      replaces the default rather than merging into it.
+
+      The keys the producer sets itself are rejected here: #{@reserved_keys_doc}. Use
+      `producer: [concurrency: N]` for the consumer count and the `:flow_*` options above for
+      flow control.
+
+      `:batch_index_ack_enabled` is worth enabling for Broadway, which routinely completes
+      messages from one batch out of order, but it requires
+      `acknowledgmentAtBatchIndexLevelEnabled=true` on the broker.
+      """
+    ],
+    flow_initial: [
+      type: :pos_integer,
+      default: 100,
+      doc: "Permits each consumer grants when it subscribes."
+    ],
+    flow_threshold: [
+      type: :pos_integer,
+      default: 50,
+      doc: "Refill once outstanding permits reach this level. Must be less than `:flow_initial`."
+    ],
+    flow_refill: [
+      type: :pos_integer,
+      default: 50,
+      doc: "Permits granted by each refill."
+    ]
+  ]
 
   # Terminal subscription errors can stop a group without stopping its root.
   @health_check_interval_ms 5_000
@@ -60,51 +118,14 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Configuration
 
-  - `:client` - Name of the `Pulsar.Client` to attach to (optional, default: `:default`).
-    The client must already be running; see "Starting a client" below.
-  - `:topic` - A single Pulsar topic to consume from (required if `:topics` is not set)
-  - `:topics` - A list of Pulsar topics to consume from (required if `:topic` is not set).
-    One consumer is started per topic. Providing a single topic via `:topic` is equivalent
-    to `topics: [topic]` and is kept for backwards compatibility.
-  - `:subscription` - The subscription name (required)
-  - `:active_state_callback` - An optional `{module, function, extra_args}` tuple that receives
-    active/passive state changes for Failover consumers. See "Failover Active State" below.
-  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.Consumer.start_link/1` (optional).
-    Applied to all topics when using `:topics`.
-    - `:subscription_type` - Subscription type (`:exclusive`, `:failover`, `:shared`, `:key_shared`, default: `:shared`)
-    - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
-    - `:durable` - Whether subscription is durable (default: `true`)
-    - `:force_create_topic` - Force topic creation (default: `true`)
-    - `:start_message_id` - Start from specific `{ledger_id, entry_id}`
-    - `:start_timestamp` - Start from timestamp
-    - `:redelivery_interval` - Redelivery interval in milliseconds for NACKed messages
-    - `:dead_letter_policy` - Dead letter queue configuration
-    - `:startup_delay_ms` - Fixed startup delay in milliseconds before consumer initialization (default: 0)
-    - `:startup_jitter_ms` - Random startup delay (0 to N ms) to avoid thundering herd on consumer restart (default: 0)
-    - `:max_pending_chunked_messages` - Maximum number of concurrent chunked messages to buffer (default: 10)
-    - `:expire_incomplete_chunked_message_after` - Timeout in milliseconds for incomplete chunked messages (default: 60_000)
-    - `:chunk_cleanup_interval` - Interval in milliseconds for checking expired chunked messages (default: 30_000)
-    - `:read_compacted` - If true, reads messages from the compacted topic ledger (default: false)
-    - `:batch_index_ack_enabled` - Acknowledge individual messages within a batched entry rather
-      than the whole entry (default: false). Worth enabling for Broadway, which routinely
-      completes messages from one batch out of order, but it requires
-      `acknowledgmentAtBatchIndexLevelEnabled=true` on the broker
-    - `:schema` - Schema to register with the subscription, as `[type: atom, definition: term]`
-    - `:partition_discovery_interval_ms` - How often (in milliseconds) to poll for new partitions on
-      partitioned topics. Set to `false` to disable discovery (default: 60_000)
+  #{NimbleOptions.docs(@opts_schema)}
 
-  `:consumer_count` is not accepted here; use Broadway's `producer: [concurrency: N]`.
-  Nor are the consumer's own `:flow_*` options — see "Flow Control Options" below.
+  Options are validated when the stage starts, so a misconfigured pipeline fails at boot
+  rather than at the first message.
 
-  The total consumer startup delay is `startup_delay_ms + random(0, startup_jitter_ms)`, applied on every consumer start/restart.
+  ## Flow Control
 
-  ## Flow Control Options
-
-  - `:flow_initial` - Permits each consumer grants when it subscribes (optional, default: 100)
-  - `:flow_threshold` - Refill once outstanding permits reach this level (optional, default: 50)
-  - `:flow_refill` - Permits granted by each refill (optional, default: 50)
-
-  These replace the consumer's own automatic refills: the producer sets the consumer's
+  The `:flow_*` options replace the consumer's own automatic refills: the producer sets the consumer's
   `:flow_policy` to report what each delivery cost and grants the refills itself, sized to
   what Broadway has taken. Each worker still grants its full `:flow_initial` window when it
   subscribes, independently of pipeline demand, so read-ahead is bounded by the permit window
@@ -214,7 +235,7 @@ defmodule OffBroadway.Pulsar.Producer do
       producer: [
         module: {OffBroadway.Pulsar.Producer,
           client: :analytics,
-          topic: "my-topic",
+          topics: ["my-topic"],
           subscription: "my-subscription"
         }
       ]
@@ -225,39 +246,19 @@ defmodule OffBroadway.Pulsar.Producer do
 
   @impl GenStage
   def init(opts) do
-    topics =
-      cond do
-        Keyword.has_key?(opts, :topics) ->
-          Keyword.fetch!(opts, :topics)
+    opts = validate_options!(opts)
 
-        Keyword.has_key?(opts, :topic) ->
-          [Keyword.fetch!(opts, :topic)]
-
-        true ->
-          raise ArgumentError, "either :topic or :topics is required"
-      end
-
+    topics = Keyword.fetch!(opts, :topics)
     subscription = Keyword.fetch!(opts, :subscription)
-    client = Keyword.get(opts, :client, :default)
+    client = Keyword.fetch!(opts, :client)
 
-    active_state_callback = Keyword.get(opts, :active_state_callback)
+    active_state_callback = Keyword.fetch!(opts, :active_state_callback)
 
     ensure_client_running!(client)
 
-    flow_initial =
-      opts
-      |> Keyword.get(:flow_initial, @default_flow_initial)
-      |> validate_positive_integer!(:flow_initial)
-
-    flow_threshold =
-      opts
-      |> Keyword.get(:flow_threshold, @default_flow_threshold)
-      |> validate_positive_integer!(:flow_threshold)
-
-    flow_refill =
-      opts
-      |> Keyword.get(:flow_refill, @default_flow_refill)
-      |> validate_positive_integer!(:flow_refill)
+    flow_initial = Keyword.fetch!(opts, :flow_initial)
+    flow_threshold = Keyword.fetch!(opts, :flow_threshold)
+    flow_refill = Keyword.fetch!(opts, :flow_refill)
 
     if flow_threshold >= flow_initial do
       raise ArgumentError,
@@ -269,8 +270,7 @@ defmodule OffBroadway.Pulsar.Producer do
     # any. Refills are this producer's, driven by what Broadway takes.
     consumer_opts_base =
       opts
-      |> Keyword.get(:consumer_opts, @default_consumer_opts)
-      |> Keyword.take(@supported_consumer_opts)
+      |> Keyword.fetch!(:consumer_opts)
       |> Keyword.merge(
         client: client,
         flow_initial: flow_initial,
@@ -532,10 +532,38 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  defp validate_positive_integer!(value, _name) when is_integer(value) and value > 0, do: value
+  defp validate_options!(opts) do
+    # Broadway injects :broadway (pipeline name and stage index) into the producer's options.
+    {_broadway, opts} = Keyword.pop(opts, :broadway)
 
-  defp validate_positive_integer!(value, name) do
-    raise ArgumentError,
-          "expected :#{name} to be a positive integer, got: #{inspect(value)}"
+    opts =
+      case NimbleOptions.validate(opts, @opts_schema) do
+        {:ok, opts} -> opts
+        {:error, error} -> raise ArgumentError, Exception.message(error)
+      end
+
+    consumer_opts = Keyword.fetch!(opts, :consumer_opts)
+
+    Enum.each(@reserved_consumer_opts, fn {key, reason} ->
+      if Keyword.has_key?(consumer_opts, key) do
+        raise ArgumentError, "invalid value for :consumer_opts: #{inspect(key)} cannot be set here, #{reason}"
+      end
+    end)
+
+    opts
+  end
+
+  # An empty list would leave the stage running with nothing to consume, so it is rejected
+  # here rather than by the {:list, :string} type.
+  @doc false
+  @spec validate_topics(term()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def validate_topics([_ | _] = topics) do
+    if Enum.all?(topics, &is_binary/1),
+      do: {:ok, topics},
+      else: {:error, "expected a non-empty list of topic names, got: #{inspect(topics)}"}
+  end
+
+  def validate_topics(other) do
+    {:error, "expected a non-empty list of topic names, got: #{inspect(other)}"}
   end
 end

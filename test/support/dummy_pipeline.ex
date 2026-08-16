@@ -11,15 +11,10 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
     producer_concurrency = Keyword.get(opts, :producer_concurrency, 1)
     processor_concurrency = Keyword.get(opts, :processor_concurrency, 1)
 
-    topic_config =
-      if Keyword.has_key?(opts, :topics) do
-        [topics: Keyword.fetch!(opts, :topics)]
-      else
-        [topic: Keyword.get(opts, :topic, "persistent://public/default/test-topic")]
-      end
+    topics = Keyword.get(opts, :topics, ["persistent://public/default/test-topic"])
 
     producer_config =
-      ([subscription: subscription, consumer_opts: consumer_opts] ++ topic_config)
+      [subscription: subscription, consumer_opts: consumer_opts, topics: topics]
       |> maybe_put(opts, :client)
       |> maybe_put(opts, :flow_initial)
       |> maybe_put(opts, :flow_threshold)

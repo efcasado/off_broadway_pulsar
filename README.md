@@ -85,7 +85,7 @@ children = [
 producer: [
   module: {OffBroadway.Pulsar.Producer,
     client: :analytics,
-    topic: "persistent://public/default/my-topic",
+    topics: ["persistent://public/default/my-topic"],
     subscription: "my-subscription"
   },
   concurrency: 1
@@ -94,18 +94,16 @@ producer: [
 
 ## Configuration
 
-Options accepted by the producer:
+`:topics` and `:subscription` are required. `:client` selects which running `Pulsar.Client`
+to attach to, the `:flow_*` options tune read-ahead, `:active_state_callback` observes
+failover transitions, and `:consumer_opts` is forwarded to `Pulsar.Consumer`.
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `:topic` / `:topics` | — | Topic, or list of topics, to consume from. One consumer per topic; one of the two is required |
-| `:subscription` | — | Subscription name (required) |
-| `:client` | `:default` | Name of the running `Pulsar.Client` to attach to |
-| `:consumer_opts` | `[subscription_type: :shared]` | Options forwarded to `Pulsar.Consumer`, applied to every topic |
-| `:flow_initial` | `100` | Permits each consumer grants when it subscribes |
-| `:flow_threshold` | `50` | Refill once outstanding permits fall to this level; must be less than `:flow_initial` |
-| `:flow_refill` | `50` | Permits granted per refill |
-| `:active_state_callback` | `nil` | `{module, function, extra_args}` invoked on active/passive transitions of `:failover` consumers |
+Options are validated when the stage starts, so a misconfigured pipeline fails at boot rather
+than at the first message. The
+[producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
+lists every option with its type and default.
+
+### Flow control
 
 The `:flow_*` options replace the consumer's own automatic refills. Each consumer grants its
 full `:flow_initial` window as soon as it subscribes — before Broadway has asked for
@@ -115,20 +113,27 @@ demand: messages delivered ahead of demand wait in the producer's buffer. Each c
 keeps its own window — one per topic, and one per partition of a partitioned topic — and
 each producer stage has its own consumers, so size `:flow_initial` with that total in mind.
 
-`:consumer_opts` forwards a fixed set of keys (subscription type, initial position, dead
-letter policy, chunking and schema settings, and others); anything outside that set is
-dropped. Setting it replaces the default rather than merging into it. The consumer's own
-`:consumer_count` and `:flow_*` options are not honored here — use Broadway's
-`producer: [concurrency: N]` and the `:flow_*` options above.
+### Consumer options
+
+`:consumer_opts` is forwarded to every consumer the stage starts.
+[`Pulsar.Consumer`](https://hexdocs.pm/pulsar_elixir/Pulsar.Consumer.html) documents and
+validates the keys it accepts, so they are deliberately not mirrored here. Setting the option
+replaces the default rather than merging into it.
+
+The keys the producer sets for itself — the topic, subscription, callback module, consumer
+count and flow settings — are rejected, each naming the option that does work instead: use
+`producer: [concurrency: N]` for the consumer count, and the `:flow_*` options above for flow
+control.
+
+### Failover active state
 
 `:active_state_callback` is invoked as `apply(module, function, [metadata | extra_args])`,
 where `metadata` carries the active state, the topic or partition, the subscription and the
 consumer pid. It runs synchronously in the Pulsar consumer, so it should return promptly.
 Reports are best-effort observations — they may repeat, and they are not a distributed lock
-or fencing mechanism.
-
-See the [producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
-for the full option list and the complete callback contract.
+or fencing mechanism. The
+[producer documentation](https://hexdocs.pm/off_broadway_pulsar/OffBroadway.Pulsar.Producer.html#start_link/1)
+has the complete callback contract.
 
 ## Architecture and failure propagation
 

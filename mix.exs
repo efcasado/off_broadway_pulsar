@@ -46,6 +46,7 @@ defmodule OffBroadwayPulsar.MixProject do
   defp deps do
     [
       {:broadway, "~> 1.2"},
+      {:nimble_options, "~> 1.1"},
       {:pulsar, "~> 3.0.1", hex: :pulsar_elixir},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
