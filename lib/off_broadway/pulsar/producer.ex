@@ -125,17 +125,19 @@ defmodule OffBroadway.Pulsar.Producer do
 
   ## Flow Control
 
-  The `:flow_*` options replace the consumer's own automatic refills: the producer sets the consumer's
-  `:flow_policy` to report what each delivery cost and grants the refills itself, sized to
-  what Broadway has taken. Each worker still grants its full `:flow_initial` window when it
-  subscribes, independently of pipeline demand, so read-ahead is bounded by the permit window
-  rather than by demand; deliveries that arrive ahead of demand wait in the producer's buffer.
-  Processor demand is served from the window already granted, rather than triggering a flow
-  request of its own.
+  Each topic or partition consumer has its own Pulsar permit window. Broadway demand and the
+  message buffer are shared by all consumers owned by one producer stage, so deliveries that
+  arrive ahead of demand wait in that buffer.
 
-  Each consumer keeps its own window — one per topic, and one per partition of a
-  partitioned topic. With `producer: [concurrency: N]`, each producer has its own
-  consumers, and so its own windows.
+  Each consumer grants `:flow_initial` permits when it subscribes. Permits are charged when
+  messages leave the buffer for the processors, not when they are acknowledged. When the
+  remaining permits reach `:flow_threshold`, the producer grants another `:flow_refill` permits.
+
+  The approximate maximum window per consumer is
+  `max(flow_initial, flow_threshold + flow_refill)`. Account for every topic or partition
+  consumer and every producer stage when estimating total read-ahead. Larger windows reduce
+  refill overhead but increase buffered and unacknowledged messages; smaller windows may limit
+  throughput.
 
   ## Consumer ownership
 
