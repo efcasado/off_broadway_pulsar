@@ -193,18 +193,19 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       {:ok, alive} = start_supervised({StubConsumer, self()})
       dead = self()
 
-      buffer = [
-        {:message, @message, dead, @context},
-        {:message, @message, alive, @context},
-        {:permits, dead, 2}
-      ]
+      buffer =
+        :queue.from_list([
+          {:message, @message, dead, @context},
+          {:message, @message, alive, @context},
+          {:permits, dead, 2}
+        ])
 
       state = %{state() | buffer: buffer, demand: 0, consumers: %{dead => {"topic", 10}, alive => {"other", 10}}}
 
       assert {:noreply, [], new_state} =
                Producer.handle_info({:DOWN, make_ref(), :process, dead, :killed}, state)
 
-      assert new_state.buffer == [{:message, @message, alive, @context}]
+      assert :queue.to_list(new_state.buffer) == [{:message, @message, alive, @context}]
       refute Map.has_key?(new_state.consumers, dead)
     end
   end
@@ -216,20 +217,24 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       assert metadata.message_id_string == "1:2:-1"
       assert metadata.topic == "topic"
-      assert new_state.buffer == []
+      assert :queue.is_empty(new_state.buffer)
       # Nothing is charged until the flow policy reports what the delivery cost.
       pid = self()
       assert %{^pid => {"topic", 10}} = new_state.consumers
     end
 
     test "dispatches up to demand and buffers the rest" do
-      buffer = for _ <- 1..3, do: {:message, @message, self(), @context}
+      buffer =
+        1..3
+        |> Enum.map(fn _ -> {:message, @message, self(), @context} end)
+        |> :queue.from_list()
+
       state = %{state() | buffer: buffer, demand: 0}
 
       assert {:noreply, dispatched, new_state} = Producer.handle_demand(2, state)
 
       assert length(dispatched) == 2
-      assert length(new_state.buffer) == 1
+      assert :queue.len(new_state.buffer) == 1
       assert new_state.demand == 0
     end
   end
@@ -237,21 +242,22 @@ defmodule OffBroadway.Pulsar.ProducerTest do
   describe ":permits_consumed" do
     test "charges the window only once Broadway has taken the delivery's messages" do
       # One delivery: two messages, then the marker saying what the broker charged for it.
-      buffer = [
-        {:message, @message, self(), @context},
-        {:message, @message, self(), @context},
-        {:permits, self(), 2}
-      ]
+      buffer =
+        :queue.from_list([
+          {:message, @message, self(), @context},
+          {:message, @message, self(), @context},
+          {:permits, self(), 2}
+        ])
 
       pid = self()
 
       assert {:noreply, [_first], held} = Producer.handle_demand(1, %{state() | buffer: buffer, demand: 0})
       assert %{^pid => {"topic", 10}} = held.consumers
-      assert [{:message, _, _, _}, {:permits, _, 2}] = held.buffer
+      assert [{:message, _, _, _}, {:permits, _, 2}] = :queue.to_list(held.buffer)
 
       assert {:noreply, [_second], charged} = Producer.handle_demand(1, held)
       assert %{^pid => {"topic", 8}} = charged.consumers
-      assert charged.buffer == []
+      assert :queue.is_empty(charged.buffer)
     end
 
     test "charges a delivery no callback saw without waiting for demand" do
@@ -261,7 +267,7 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
       pid = self()
       assert %{^pid => {"topic", 8}} = new_state.consumers
-      assert new_state.buffer == []
+      assert :queue.is_empty(new_state.buffer)
     end
 
     test "refills once the window falls to the threshold" do
@@ -383,7 +389,7 @@ defmodule OffBroadway.Pulsar.ProducerTest do
       consumers: %{self() => {"topic", 10}},
       consumer_roots: %{},
       demand: 10,
-      buffer: [],
+      buffer: :queue.new(),
       flow_initial: 10,
       flow_threshold: 2,
       flow_refill: 5
