@@ -345,6 +345,23 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
   end
 
+  describe "unexpected messages" do
+    test "are ignored rather than taking the stage and its consumer roots down" do
+      assert {:noreply, [], new_state} = Producer.handle_info(:unexpected, state())
+
+      assert new_state == state()
+    end
+
+    test "do not consume demand or disturb the buffer" do
+      buffered = %{state() | buffer: :queue.from_list([{:permits, self(), 1}]), demand: 7}
+
+      assert {:noreply, [], new_state} = Producer.handle_info({:some, :tuple}, buffered)
+
+      assert new_state.demand == 7
+      assert :queue.to_list(new_state.buffer) == [{:permits, self(), 1}]
+    end
+  end
+
   defp healthy_consumer(opts \\ []) do
     root = start_supervised!(consumer_root_spec(Keyword.get(opts, :worker_count, 1)))
     monitor_ref = Process.monitor(root)
