@@ -325,7 +325,7 @@ defmodule OffBroadway.Pulsar.Producer do
       demand: 0,
       # An ordered mix of {:message, %Pulsar.Message{}, consumer_pid, context} and
       # {:permits, consumer_pid, consumed} markers. See take_dispatchable/3.
-      buffer: [],
+      buffer: :queue.new(),
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
       flow_refill: flow_refill
@@ -339,7 +339,7 @@ defmodule OffBroadway.Pulsar.Producer do
   @impl GenStage
   def handle_demand(incoming_demand, state) do
     new_demand = state.demand + incoming_demand
-    Logger.debug("Received demand #{incoming_demand}, total demand: #{new_demand}, buffer: #{length(state.buffer)}")
+    Logger.debug("Received demand #{incoming_demand}, total demand: #{new_demand}, buffer: #{:queue.len(state.buffer)}")
     dispatch_messages(%{state | demand: new_demand})
   end
 
@@ -354,14 +354,15 @@ defmodule OffBroadway.Pulsar.Producer do
   end
 
   def handle_info({:pulsar_message, message_info, consumer_pid, context}, state) do
-    new_buffer = state.buffer ++ [{:message, message_info, consumer_pid, context}]
-    Logger.debug("Message arrived, buffer size: #{length(new_buffer)}")
+    new_buffer = :queue.in({:message, message_info, consumer_pid, context}, state.buffer)
+    Logger.debug("Message arrived, buffer size: #{:queue.len(new_buffer)}")
 
     dispatch_messages(%{state | buffer: new_buffer})
   end
 
   def handle_info({:permits_consumed, consumer_pid, consumed}, state) do
-    dispatch_messages(%{state | buffer: state.buffer ++ [{:permits, consumer_pid, consumed}]})
+    buffer = :queue.in({:permits, consumer_pid, consumed}, state.buffer)
+    dispatch_messages(%{state | buffer: buffer})
   end
 
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
@@ -400,11 +401,14 @@ defmodule OffBroadway.Pulsar.Producer do
     # Entries from a dead worker can no longer be acknowledged; discard them and
     # their permit markers.
     buffer =
-      Enum.reject(state.buffer, fn
-        {:message, _msg, ^consumer_pid, _context} -> true
-        {:permits, ^consumer_pid, _consumed} -> true
-        _entry -> false
-      end)
+      :queue.filter(
+        fn
+          {:message, _msg, ^consumer_pid, _context} -> false
+          {:permits, ^consumer_pid, _consumed} -> false
+          _entry -> true
+        end,
+        state.buffer
+      )
 
     {:noreply, [],
      %{
@@ -418,7 +422,7 @@ defmodule OffBroadway.Pulsar.Producer do
     {taken, remaining} = take_dispatchable(buffer, demand)
     broadway_messages = for {:message, msg, pid, context} <- taken, do: wrap_message(msg, pid, context)
 
-    Logger.debug("Dispatching #{length(broadway_messages)} messages, #{length(remaining)} remaining in buffer")
+    Logger.debug("Dispatching #{length(broadway_messages)} messages, #{:queue.len(remaining)} remaining in buffer")
 
     state = charge_permits(%{state | buffer: remaining, demand: demand - length(broadway_messages)}, taken)
 
@@ -428,17 +432,21 @@ defmodule OffBroadway.Pulsar.Producer do
   # Permit markers follow all messages from the same broker delivery. Charge the delivery
   # only after those messages leave the buffer; a leading marker represents a delivery
   # that produced no Broadway messages.
-  defp take_dispatchable(buffer, demand, taken \\ [])
+  defp take_dispatchable(buffer, demand, taken \\ []) do
+    case :queue.out(buffer) do
+      {:empty, buffer} ->
+        {Enum.reverse(taken), buffer}
 
-  defp take_dispatchable([{:permits, _, _} = marker | rest], demand, taken) do
-    take_dispatchable(rest, demand, [marker | taken])
+      {{:value, {:permits, _, _} = marker}, rest} ->
+        take_dispatchable(rest, demand, [marker | taken])
+
+      {{:value, {:message, _, _, _} = message}, rest} when demand > 0 ->
+        take_dispatchable(rest, demand - 1, [message | taken])
+
+      {{:value, entry}, rest} ->
+        {Enum.reverse(taken), :queue.in_r(entry, rest)}
+    end
   end
-
-  defp take_dispatchable([{:message, _, _, _} = message | rest], demand, taken) when demand > 0 do
-    take_dispatchable(rest, demand - 1, [message | taken])
-  end
-
-  defp take_dispatchable(buffer, _demand, taken), do: {Enum.reverse(taken), buffer}
 
   defp charge_permits(state, taken) do
     Enum.reduce(taken, state, fn
