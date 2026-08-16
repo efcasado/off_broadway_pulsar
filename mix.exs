@@ -19,7 +19,13 @@ defmodule OffBroadwayPulsar.MixProject do
       source_url: "https://github.com/efcasado/off_broadway_pulsar",
       docs: [
         main: "OffBroadway.Pulsar.Producer",
-        extras: ["README.md"]
+        extras: [
+          "README.md",
+          "docs/upgrading_to_2.0.md"
+        ],
+        groups_for_extras: [
+          Guides: ~r/docs\/.*/
+        ]
       ]
     ]
   end
@@ -64,7 +70,7 @@ defmodule OffBroadwayPulsar.MixProject do
   defp package do
     [
       name: "off_broadway_pulsar",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
+      files: ~w(lib docs/upgrading_to_2.0.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
       licenses: ~w(MIT),
       links: %{
         "GitHub" => "https://github.com/efcasado/off_broadway_pulsar",
