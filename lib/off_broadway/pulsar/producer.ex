@@ -328,7 +328,8 @@ defmodule OffBroadway.Pulsar.Producer do
       buffer: :queue.new(),
       flow_initial: flow_initial,
       flow_threshold: flow_threshold,
-      flow_refill: flow_refill
+      flow_refill: flow_refill,
+      draining: false
     }
 
     schedule_health_check()
@@ -377,6 +378,10 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
+  # A group that loses its last worker while draining would otherwise stop a stage that is
+  # already shutting down, abandoning the messages Broadway is still finishing.
+  def handle_info(:check_consumers, %{draining: true} = state), do: {:noreply, [], state}
+
   def handle_info(:check_consumers, state) do
     case check_consumers(state) do
       :ok ->
@@ -394,6 +399,13 @@ defmodule OffBroadway.Pulsar.Producer do
     Logger.warning("Producer received an unexpected message: #{inspect(message)}")
 
     {:noreply, [], state}
+  end
+
+  # The consumers themselves stay up: the messages Broadway is draining acknowledge through the
+  # worker that delivered them, and would be redelivered if it went away first.
+  @impl Broadway.Producer
+  def prepare_for_draining(state) do
+    {:noreply, [], %{state | draining: true}}
   end
 
   @impl GenStage
@@ -468,7 +480,7 @@ defmodule OffBroadway.Pulsar.Producer do
         outstanding = max(outstanding - consumed, 0)
         state = %{state | consumers: Map.put(state.consumers, pid, {topic, outstanding})}
 
-        if outstanding <= state.flow_threshold do
+        if outstanding <= state.flow_threshold and not state.draining do
           refill_consumer(state, pid, topic, outstanding)
         else
           state
