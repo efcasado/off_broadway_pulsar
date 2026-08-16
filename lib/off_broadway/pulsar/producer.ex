@@ -10,6 +10,9 @@ defmodule OffBroadway.Pulsar.Producer do
   The connection belongs to your application: supervise a `Pulsar.Client` and this
   producer attaches its consumers to it.
 
+  Each producer stage owns the consumers it starts. See "Consumer ownership" in
+  `start_link/1`.
+
   See `start_link/1` for detailed configuration options.
   """
 
@@ -48,6 +51,9 @@ defmodule OffBroadway.Pulsar.Producer do
   @default_flow_threshold 50
   @default_flow_refill 50
 
+  # Terminal subscription errors can stop a group without stopping its root.
+  @health_check_interval_ms 5_000
+
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
@@ -63,7 +69,7 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:subscription` - The subscription name (required)
   - `:active_state_callback` - An optional `{module, function, extra_args}` tuple that receives
     active/passive state changes for Failover consumers. See "Failover Active State" below.
-  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.Consumer.start/1` (optional).
+  - `:consumer_opts` - Consumer-specific options passed to `Pulsar.Consumer.start_link/1` (optional).
     Applied to all topics when using `:topics`.
     - `:subscription_type` - Subscription type (`:exclusive`, `:failover`, `:shared`, `:key_shared`, default: `:shared`)
     - `:initial_position` - Initial position (`:latest` or `:earliest`, default: `:latest`)
@@ -106,6 +112,21 @@ defmodule OffBroadway.Pulsar.Producer do
   Each consumer keeps its own window — one per topic, and one per partition of a
   partitioned topic. With `producer: [concurrency: N]`, each producer has its own
   consumers, and so its own windows.
+
+  ## Consumer ownership
+
+  Each producer stage starts one linked consumer root per topic. Pulsar supervises the
+  partition groups and workers below each root; Broadway supervises the stage. A root exit
+  makes Broadway restart the stage and recreate all of its roots, while stopping the stage
+  stops its linked roots. Retryable worker failures remain local to the Pulsar topology.
+
+  Consumer roots use the client's broker infrastructure but are not children of its consumer
+  `DynamicSupervisor`. Consequently, `Pulsar.Client.consumers/1` does not list them. The stage
+  owns them by pid, so replacing the client's consumer Registry does not affect them, although
+  their former names no longer resolve. Stop the Broadway pipeline to stop them permanently.
+
+  A terminal subscription error can leave a root alive with a stopped group. The stage
+  detects that state and restarts instead of remaining healthy with nothing to consume.
 
   ## Message Metadata
 
@@ -220,8 +241,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
     ensure_client_running!(client)
 
-    # Validate flow options before starting consumers; failed init retries would
-    # otherwise leak client-supervised consumers.
     flow_initial =
       opts
       |> Keyword.get(:flow_initial, @default_flow_initial)
@@ -255,28 +274,31 @@ defmodule OffBroadway.Pulsar.Producer do
         flow_policy: {Callback, :report_permits, [self()]}
       )
 
-    # The unique name keeps multi-topic and producer concurrency > 1 apart. Consumers run
-    # under the client's supervisor, not under this producer.
-    Enum.each(topics, fn topic ->
-      unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
+    # One linked root per topic; unique names also separate concurrent producer stages.
+    consumer_roots =
+      Map.new(topics, fn topic ->
+        unique_name = "#{topic}-#{subscription}-#{System.unique_integer([:positive])}"
 
-      topic_opts =
-        Keyword.merge(consumer_opts_base,
-          topic: topic,
-          subscription_name: subscription,
-          callback_module: Callback,
-          name: unique_name,
-          init_args: [self(), active_state_callback]
-        )
+        topic_opts =
+          Keyword.merge(consumer_opts_base,
+            topic: topic,
+            subscription_name: subscription,
+            callback_module: Callback,
+            name: unique_name,
+            init_args: [self(), active_state_callback]
+          )
 
-      start_consumer!(topic_opts)
-    end)
+        root = start_consumer!(topic_opts)
+        {root, {topic, Process.monitor(root)}}
+      end)
 
     state = %{
       # consumer_pid => {topic, outstanding_permits}, populated via :consumer_ready.
       # Permits belong to a worker instance, so the worker is the key; the topic only
       # rides along for logging.
       consumers: %{},
+      # root pid => {topic, monitor_ref}
+      consumer_roots: consumer_roots,
       demand: 0,
       # An ordered mix of {:message, %Pulsar.Message{}, consumer_pid, context} and
       # {:permits, consumer_pid, consumed} markers. See take_dispatchable/3.
@@ -285,6 +307,8 @@ defmodule OffBroadway.Pulsar.Producer do
       flow_threshold: flow_threshold,
       flow_refill: flow_refill
     }
+
+    schedule_health_check()
 
     {:producer, state}
   end
@@ -317,7 +341,39 @@ defmodule OffBroadway.Pulsar.Producer do
     dispatch_messages(%{state | buffer: state.buffer ++ [{:permits, consumer_pid, consumed}]})
   end
 
-  def handle_info({:DOWN, _ref, :process, consumer_pid, _reason}, state) do
+  def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
+    case state.consumer_roots do
+      %{^pid => {topic, ^monitor_ref}} ->
+        Logger.error("Consumer root for #{topic} exited: #{inspect(reason)}; stopping")
+
+        {:stop, {:shutdown, {:consumer_gone, topic}}, state}
+
+      _worker_or_unknown ->
+        forget_consumer(pid, state)
+    end
+  end
+
+  def handle_info(:check_consumers, state) do
+    case check_consumers(state) do
+      :ok ->
+        schedule_health_check()
+        {:noreply, [], state}
+
+      {:stopped, topic} ->
+        Logger.error("Consumer for #{topic} has a stopped group and no worker left; stopping")
+
+        {:stop, {:shutdown, {:consumer_stopped, topic}}, state}
+    end
+  end
+
+  @impl GenStage
+  def terminate(_reason, state) do
+    Enum.each(state.consumer_roots, fn {root, _metadata} ->
+      Pulsar.Consumer.stop(root)
+    end)
+  end
+
+  defp forget_consumer(consumer_pid, state) do
     # Entries from a dead worker can no longer be acknowledged; discard them and
     # their permit markers.
     buffer =
@@ -428,12 +484,31 @@ defmodule OffBroadway.Pulsar.Producer do
     end
   end
 
-  defp start_consumer!(opts) do
-    case Pulsar.Consumer.start(opts) do
-      {:ok, consumer} ->
-        consumer
+  defp schedule_health_check, do: Process.send_after(self(), :check_consumers, @health_check_interval_ms)
 
-      {:ok, consumer, _info} ->
+  # Terminal subscription errors can stop a group without stopping its root.
+  defp check_consumers(state) do
+    Enum.reduce_while(state.consumer_roots, :ok, fn {root, {topic, _monitor_ref}}, :ok ->
+      if stopped_group?(root), do: {:halt, {:stopped, topic}}, else: {:cont, :ok}
+    end)
+  end
+
+  defp stopped_group?(root) do
+    root
+    |> Supervisor.which_children()
+    |> Enum.any?(fn
+      {{:topic, :non_partitioned}, :undefined, _type, _modules} -> true
+      {{:partition, _index}, :undefined, _type, _modules} -> true
+      _child -> false
+    end)
+  catch
+    # Root exits are reported by its monitor.
+    :exit, _reason -> false
+  end
+
+  defp start_consumer!(opts) do
+    case Pulsar.Consumer.start_link(opts) do
+      {:ok, consumer} ->
         consumer
 
       other ->

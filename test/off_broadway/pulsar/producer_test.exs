@@ -34,9 +34,6 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
 
     test "validates flow options before starting any consumer" do
-      # A registered name is all ensure_client_running!/1 checks. Were the flow options
-      # validated after the consumers are started, this would fail with a MatchError on
-      # Pulsar.Consumer.start/1's {:error, :client_not_found} instead.
       start_supervised!(%{
         id: :fake_client,
         start: {Agent, :start_link, [fn -> :ok end, [name: :fake_client]]}
@@ -198,9 +195,58 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
   end
 
+  describe "consumer ownership" do
+    test "stops when a consumer root exits normally" do
+      monitor_ref = make_ref()
+      state = %{state() | consumer_roots: %{self() => {"topic", monitor_ref}}}
+
+      assert {:stop, {:shutdown, {:consumer_gone, "topic"}}, _state} =
+               Producer.handle_info({:DOWN, monitor_ref, :process, self(), :normal}, state)
+    end
+
+    test "the health check leaves a running consumer alone" do
+      %{root: root, state: state} = healthy_consumer()
+
+      assert {:noreply, [], _state} = Producer.handle_info(:check_consumers, state)
+      assert Process.alive?(root)
+    end
+
+    test "the health check stops when a consumer has a group the client gave up on" do
+      %{root: root, state: state} = healthy_consumer()
+
+      [{_id, group, _type, _modules}] = Supervisor.which_children(root)
+      :ok = Agent.stop(group)
+
+      assert {:stop, {:shutdown, {:consumer_stopped, "topic"}}, _state} =
+               Producer.handle_info(:check_consumers, state)
+    end
+  end
+
+  defp healthy_consumer do
+    root = start_supervised!(consumer_root_spec())
+    monitor_ref = Process.monitor(root)
+
+    %{root: root, state: %{state() | consumer_roots: %{root => {"topic", monitor_ref}}}}
+  end
+
+  defp consumer_root_spec do
+    group = %{
+      id: {:topic, :non_partitioned},
+      start: {Agent, :start_link, [fn -> :ok end]},
+      restart: :transient
+    }
+
+    %{
+      id: :root,
+      start: {Supervisor, :start_link, [[group], [strategy: :one_for_one]]},
+      type: :supervisor
+    }
+  end
+
   defp state do
     %{
       consumers: %{self() => {"topic", 10}},
+      consumer_roots: %{},
       demand: 10,
       buffer: [],
       flow_initial: 10,
