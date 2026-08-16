@@ -105,9 +105,12 @@ defmodule OffBroadway.Pulsar.Producer do
   - `:flow_refill` - Permits granted by each refill (optional, default: 50)
 
   These replace the consumer's own automatic refills: the producer sets the consumer's
-  `:flow_policy` to report what each delivery cost and grants the refills itself, so the
-  broker runs no further ahead than Broadway has asked for. Processor demand is served from
-  the window already granted, rather than triggering a flow request of its own.
+  `:flow_policy` to report what each delivery cost and grants the refills itself, sized to
+  what Broadway has taken. Each worker still grants its full `:flow_initial` window when it
+  subscribes, independently of pipeline demand, so read-ahead is bounded by the permit window
+  rather than by demand; deliveries that arrive ahead of demand wait in the producer's buffer.
+  Processor demand is served from the window already granted, rather than triggering a flow
+  request of its own.
 
   Each consumer keeps its own window — one per topic, and one per partition of a
   partitioned topic. With `producer: [concurrency: N]`, each producer has its own
