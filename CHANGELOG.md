@@ -1,5 +1,69 @@
 # Changelog
 
+## [2.0.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.5.1...v2.0.0) (2026-08-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* reworked option handling ([#86](https://github.com/efcasado/off_broadway_pulsar/issues/86))
+* upgrade to pulsar-elixir 3.x ([#79](https://github.com/efcasado/off_broadway_pulsar/issues/79))
+
+### Features
+
+* stop asking for messages while draining ([98fc392](https://github.com/efcasado/off_broadway_pulsar/commit/98fc3925935ab2945beb43704da30212914d41da))
+* upgrade to pulsar-elixir 3.x ([#79](https://github.com/efcasado/off_broadway_pulsar/issues/79)) ([10c0a34](https://github.com/efcasado/off_broadway_pulsar/commit/10c0a345b8b3b9ad10aab465a167e6a8f4060c69))
+
+
+### Bug Fixes
+
+* do not crash the stage on an unexpected message ([bc87cd9](https://github.com/efcasado/off_broadway_pulsar/commit/bc87cd96054c07df5826250093fd78479e4eac1d))
+* survive loss of a consumer worker ([#88](https://github.com/efcasado/off_broadway_pulsar/issues/88)) ([4ba8a8f](https://github.com/efcasado/off_broadway_pulsar/commit/4ba8a8f00fd868e1ee33fee58bb161af179b3863))
+* tie consumer lifetime to the stage ([#81](https://github.com/efcasado/off_broadway_pulsar/issues/81)) ([eb93b72](https://github.com/efcasado/off_broadway_pulsar/commit/eb93b72fa03c36c21175727dccfc45dce0102c96))
+
+
+### Performance Improvements
+
+* use a queue for the producer message buffer ([47e9ea6](https://github.com/efcasado/off_broadway_pulsar/commit/47e9ea641ad225d8e56aea8146a1b9632b01df3b))
+
+
+### Dependencies
+
+* bump styler from 1.11.0 to 1.12.1 ([#74](https://github.com/efcasado/off_broadway_pulsar/issues/74)) ([67381b4](https://github.com/efcasado/off_broadway_pulsar/commit/67381b427a918449d1597b18ad770a24cecdb186))
+* bump styler from 1.12.1 to 1.12.2 ([#76](https://github.com/efcasado/off_broadway_pulsar/issues/76)) ([d5f0ed7](https://github.com/efcasado/off_broadway_pulsar/commit/d5f0ed73268a8ad5db60b62dae452556ea16fd66))
+* **ci:** bump jdx/mise-action from 4 to 4.2.3 ([#77](https://github.com/efcasado/off_broadway_pulsar/issues/77)) ([6ae4ff7](https://github.com/efcasado/off_broadway_pulsar/commit/6ae4ff7a4c357aad375c0697a8e1f4fe57610415))
+* **ci:** bump jdx/mise-action from 4.2.3 to 4.2.4 ([#78](https://github.com/efcasado/off_broadway_pulsar/issues/78)) ([38488bc](https://github.com/efcasado/off_broadway_pulsar/commit/38488bc66aa0599a77f90724e76ecfd59709dbca))
+* **ci:** bump jdx/mise-action from 4.2.4 to 4.2.5 ([#85](https://github.com/efcasado/off_broadway_pulsar/issues/85)) ([103685b](https://github.com/efcasado/off_broadway_pulsar/commit/103685b79bdb86f0b22f621a07e7c2b29b75b80d))
+* **docker:** bump apachepulsar/pulsar from 4.0.2 to 4.2.4 ([#84](https://github.com/efcasado/off_broadway_pulsar/issues/84)) ([6543060](https://github.com/efcasado/off_broadway_pulsar/commit/65430608ccfe002fb51023f65079e341f72027c6))
+
+
+### Documentation
+
+* add 1.x to 2.x upgrade guidelines ([463e928](https://github.com/efcasado/off_broadway_pulsar/commit/463e928d449d811d5724b41e26e84e283d32cc46))
+* extend docs about manual flow control ([#87](https://github.com/efcasado/off_broadway_pulsar/issues/87)) ([4a367d2](https://github.com/efcasado/off_broadway_pulsar/commit/4a367d258bb683cda12ba0abce10c76cddc255fc))
+* publish the changelog with the generated docs ([ae95286](https://github.com/efcasado/off_broadway_pulsar/commit/ae95286578642ddb63ec0e5f82e4923807ee6c4b))
+
+
+### Code Refactoring
+
+* reworked option handling ([#86](https://github.com/efcasado/off_broadway_pulsar/issues/86)) ([1de8748](https://github.com/efcasado/off_broadway_pulsar/commit/1de8748dd7f1fea422b065f502bc0cfac0ce1bf0))
+* validate option in prepare_for_start/2 ([5fdd033](https://github.com/efcasado/off_broadway_pulsar/commit/5fdd03333d0b2128558bc42aef626679b816ac19))
+
+
+### Tests
+
+* add batch-index ack test ([99ca6a3](https://github.com/efcasado/off_broadway_pulsar/commit/99ca6a3fd620dcd5aea6c0223247048bf0f4b07b))
+
+
+### Continuous Integration
+
+* configure dependabot to bump docker-compose deps ([7a2b532](https://github.com/efcasado/off_broadway_pulsar/commit/7a2b5326331474591a56f32dcd02dc1abce43de4))
+
+
+### Miscellaneous Chores
+
+* add configuration section to readme file ([c98dc47](https://github.com/efcasado/off_broadway_pulsar/commit/c98dc478aaae0e39855aeb4c23a89e6bf2ee0ed4))
+* **examples:** add atproto e2e example ([#82](https://github.com/efcasado/off_broadway_pulsar/issues/82)) ([4c5842a](https://github.com/efcasado/off_broadway_pulsar/commit/4c5842aa87719f701ab6a7c271463f9951b1fb2a))
+
 ## [1.5.1](https://github.com/efcasado/off_broadway_pulsar/compare/v1.5.0...v1.5.1) (2026-07-20)
 
 
