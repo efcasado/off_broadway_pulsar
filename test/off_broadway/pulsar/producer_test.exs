@@ -35,8 +35,8 @@ defmodule OffBroadway.Pulsar.ProducerTest do
 
     test "validates flow options before starting any consumer" do
       # A registered name is all ensure_client_running!/1 checks. Were the flow options
-      # validated after the consumers are started, this would fail with a MatchError on
-      # Pulsar.Consumer.start/1's {:error, :client_not_found} instead.
+      # validated later, this would fail on the client's consumer registry being absent
+      # instead, which says nothing about the option that is actually wrong.
       start_supervised!(%{
         id: :fake_client,
         start: {Agent, :start_link, [fn -> :ok end, [name: :fake_client]]}
@@ -198,9 +198,106 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
   end
 
+  describe "consumer ownership" do
+    test "stops when a known worker fails on an error the client will not retry" do
+      reason = {:ConsumerBusy, "Exclusive consumer is already connected"}
+
+      assert {:stop, {:shutdown, {:consumer_terminal_error, "topic", ^reason}}, _state} =
+               Producer.handle_info({:DOWN, make_ref(), :process, self(), {:shutdown, reason}}, state())
+    end
+
+    test "keeps running when a worker it does not know stops terminally" do
+      state = %{state() | consumers: %{}}
+
+      assert {:noreply, [], new_state} =
+               Producer.handle_info(
+                 {:DOWN, make_ref(), :process, self(), {:shutdown, {:TopicNotFound, "gone"}}},
+                 state
+               )
+
+      assert new_state.consumers == %{}
+    end
+
+    test "keeps running when a worker crashes for a reason the client retries" do
+      assert {:noreply, [], new_state} =
+               Producer.handle_info({:DOWN, make_ref(), :process, self(), :broker_crashed}, state())
+
+      assert new_state.consumers == %{}
+    end
+
+    test "the health check leaves a registered consumer whose groups are all running alone" do
+      %{root: root, state: state} = healthy_consumer()
+
+      assert {:noreply, [], _state} = Producer.handle_info(:check_consumers, state)
+      assert Process.alive?(root)
+    end
+
+    test "the health check stops when a consumer has a group the client gave up on" do
+      %{root: root, state: state} = healthy_consumer()
+
+      # What a worker stopping with {:shutdown, terminal_reason} leaves behind: a group that
+      # exited cleanly and a root that keeps the child registered without a pid.
+      [{_id, group, _type, _modules}] = Supervisor.which_children(root)
+      :ok = Agent.stop(group)
+
+      assert {:stop, {:shutdown, {:consumer_stopped, "topic"}}, _state} =
+               Producer.handle_info(:check_consumers, state)
+    end
+
+    test "the health check stops when the consumer's registration is no longer its own" do
+      %{state: state} = healthy_consumer()
+
+      # A replaced registry comes back under the same name and without the entries: the root
+      # is a supervisor, so it survives the registry it was linked to and never re-registers.
+      :ok = stop_supervised!(:registry)
+
+      start_supervised!({Registry, keys: :unique, name: Pulsar.Client.registry(:consumers, :health_client)},
+        id: :registry
+      )
+
+      assert {:stop, {:shutdown, {:consumer_unregistered, "topic"}}, _state} =
+               Producer.handle_info(:check_consumers, state)
+    end
+
+    test "the health check tolerates a root that is already gone" do
+      %{state: state} = healthy_consumer()
+      :ok = stop_supervised!(:root)
+
+      assert {:noreply, [], _state} = Producer.handle_info(:check_consumers, state)
+    end
+  end
+
+  # A registered consumer root as Pulsar builds one: a supervisor named through the client's
+  # consumer registry, holding one group child per topic or partition.
+  defp healthy_consumer do
+    client = :health_client
+    registry = Pulsar.Client.registry(:consumers, client)
+    start_supervised!({Registry, keys: :unique, name: registry}, id: :registry)
+
+    root = start_supervised!(consumer_root_spec(registry, "topic-sub-1"))
+
+    %{root: root, state: %{state() | consumer_roots: %{root => {"topic", "topic-sub-1"}}, client: client}}
+  end
+
+  defp consumer_root_spec(registry, name) do
+    group = %{
+      id: {:topic, :non_partitioned},
+      start: {Agent, :start_link, [fn -> :ok end]},
+      restart: :transient
+    }
+
+    %{
+      id: :root,
+      start: {Supervisor, :start_link, [[group], [strategy: :one_for_one, name: {:via, Registry, {registry, name}}]]},
+      type: :supervisor
+    }
+  end
+
   defp state do
     %{
       consumers: %{self() => {"topic", 10}},
+      consumer_roots: %{},
+      client: :default,
       demand: 10,
       buffer: [],
       flow_initial: 10,

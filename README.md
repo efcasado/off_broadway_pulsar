@@ -31,6 +31,10 @@ children = [
 ]
 ```
 
+The consumers themselves belong to the producer stage that started them. They are linked to
+it, so they go down with the pipeline rather than outliving it holding the subscription, and
+the stage goes down with them rather than running on with nothing to consume from.
+
 Then, assuming Pulsar is running on `localhost:6650`:
 
 ```elixir

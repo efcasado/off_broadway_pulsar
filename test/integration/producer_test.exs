@@ -11,6 +11,8 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
   @topic_a "persistent://public/default/broadway-multi-topic-a"
   @topic_b "persistent://public/default/broadway-multi-topic-b"
   @partitioned_topic "persistent://public/default/broadway-failover-partitioned"
+  @ownership_topic "persistent://public/default/broadway-consumer-ownership"
+  @exclusive_topic "persistent://public/default/broadway-exclusive-ownership"
   @partition_count 2
   @message_count 100
   @multi_topic_message_count 20
@@ -22,6 +24,8 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     :ok = System.create_topic(@topic_a)
     :ok = System.create_topic(@topic_b)
     :ok = System.create_partitioned_topic(@partitioned_topic, @partition_count)
+    :ok = System.create_topic(@ownership_topic)
+    :ok = System.create_topic(@exclusive_topic)
 
     {:ok, _client_pid} =
       Pulsar.Client.start_link(
@@ -389,6 +393,185 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
 
     assert MapSet.new(topics) == MapSet.new(expected_topics)
     assert :ok = Broadway.stop(pipeline)
+  end
+
+  describe "consumer ownership" do
+    test "consumers go down with the pipeline that started them" do
+      subscription = "ownership-shutdown-sub"
+
+      {:ok, broadway} =
+        DummyPipeline.start_link(
+          test_pid: self(),
+          topic: @topic,
+          subscription: subscription,
+          client: @client,
+          name: :ownership_shutdown_pipeline,
+          flow_initial: 5,
+          flow_threshold: 2,
+          flow_refill: 5
+        )
+
+      assert_receive {:message_handled, %Broadway.Message{}, _processor}, 10_000
+
+      assert [root] = consumer_roots(subscription)
+      ref = Process.monitor(root)
+
+      assert :ok = Broadway.stop(broadway)
+
+      # Not merely deregistered: the consumer is gone, so it holds no subscription and
+      # receives no delivery it can no longer acknowledge.
+      assert_receive {:DOWN, ^ref, :process, ^root, _reason}, 5_000
+      assert wait_until(fn -> consumer_roots(subscription) == [] end, 5_000)
+    end
+
+    test "each producer stage owns its own consumers" do
+      subscription = "ownership-concurrency-sub"
+
+      {:ok, broadway} =
+        DummyPipeline.start_link(
+          test_pid: self(),
+          topic: @topic,
+          subscription: subscription,
+          client: @client,
+          name: :ownership_concurrency_pipeline,
+          producer_concurrency: 3,
+          flow_initial: 5,
+          flow_threshold: 2,
+          flow_refill: 5
+        )
+
+      roots = consumer_roots(subscription)
+      assert length(roots) == 3
+
+      assert :ok = Broadway.stop(broadway)
+
+      assert wait_until(fn -> consumer_roots(subscription) == [] end, 5_000)
+      refute Enum.any?(roots, &Process.alive?/1)
+    end
+
+    @tag :capture_log
+    test "a pipeline that cannot subscribe recovers once the subscription is free" do
+      subscription = "exclusive-ownership-sub"
+      consumer_opts = [subscription_type: :exclusive, initial_position: :earliest]
+
+      {:ok, producer} =
+        Pulsar.Producer.start_link(topic: @exclusive_topic, client: @client, name: :exclusive_ownership_producer)
+
+      :ok = Pulsar.Producer.await_ready(producer)
+
+      {:ok, holder} =
+        DummyPipeline.start_link(
+          test_pid: self(),
+          topic: @exclusive_topic,
+          subscription: subscription,
+          client: @client,
+          name: :exclusive_holder_pipeline,
+          consumer_opts: consumer_opts
+        )
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "held")
+      assert_receive {:message_handled, %Broadway.Message{data: "held"}, _processor}, 10_000
+
+      # The broker answers this one with :ConsumerBusy, which the client refuses to retry:
+      # the worker stops, its group with it, and the root stays up with nothing under it.
+      {:ok, waiting} =
+        DummyPipeline.start_link(
+          test_pid: self(),
+          topic: @exclusive_topic,
+          subscription: subscription,
+          client: @client,
+          name: :exclusive_waiting_pipeline,
+          consumer_opts: consumer_opts
+        )
+
+      assert :ok = Broadway.stop(holder)
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "free")
+
+      # The stage notices it has no consumer, stops, and Broadway starts it again — so the
+      # subscription being taken is a delay rather than a pipeline that is up and silent.
+      assert_receive {:message_handled, %Broadway.Message{data: "free"}, _processor}, 30_000
+      assert Process.alive?(waiting)
+
+      assert :ok = Broadway.stop(waiting)
+    end
+
+    @tag :capture_log
+    test "a pipeline rebuilds its consumers when the client's consumer registry is replaced" do
+      subscription = "registry-replacement-sub"
+
+      {:ok, producer} =
+        Pulsar.Producer.start_link(topic: @ownership_topic, client: @client, name: :ownership_producer)
+
+      :ok = Pulsar.Producer.await_ready(producer)
+
+      {:ok, broadway} =
+        DummyPipeline.start_link(
+          test_pid: self(),
+          topic: @ownership_topic,
+          subscription: subscription,
+          client: @client,
+          name: :registry_replacement_pipeline
+        )
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "before")
+      assert_receive {:message_handled, %Broadway.Message{data: "before"}, _processor}, 10_000
+
+      assert [root] = consumer_roots(subscription)
+
+      # The consumer branch is :rest_for_one, so its registry taking the branch with it is
+      # what a client restart looks like from here. A root is a supervisor, so it survives
+      # the registry that linked it — alive, unregistered, and reported by nothing.
+      registry = Pulsar.Client.registry(:consumers, @client)
+      :ok = Supervisor.stop(Process.whereis(registry), :shutdown)
+      assert wait_until(fn -> Process.whereis(registry) end, 10_000)
+
+      replacement = wait_until(fn -> Enum.find(consumer_roots(subscription), &(&1 != root)) end, 20_000)
+
+      assert is_pid(replacement)
+      refute Process.alive?(root)
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "after")
+      assert_receive {:message_handled, %Broadway.Message{data: "after"}, _processor}, 10_000
+
+      assert :ok = Broadway.stop(broadway)
+    end
+  end
+
+  # The stable roots this pipeline registered, read from the client's consumer registry:
+  # started with start_link/1, they are owned by their producer stage rather than by the
+  # client's DynamicSupervisor, so Pulsar.Client.consumers/1 does not list them.
+  defp consumer_roots(subscription) do
+    :consumers
+    |> Pulsar.Client.registry(@client)
+    |> Registry.select([{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.filter(fn {name, _pid} -> String.contains?(name, subscription) end)
+    |> Enum.map(fn {_name, pid} -> pid end)
+  rescue
+    # The registry is being replaced; nothing is registered while it is away.
+    ArgumentError -> []
+  end
+
+  # Answers with whatever `fun` last returned, so a caller asserts on the result rather than
+  # on having waited.
+  defp wait_until(fun, timeout) do
+    wait_until(fun, timeout, System.monotonic_time(:millisecond) + timeout)
+  end
+
+  defp wait_until(fun, timeout, deadline) do
+    result = fun.()
+
+    cond do
+      result ->
+        result
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        result
+
+      true ->
+        Process.sleep(200)
+        wait_until(fun, timeout, deadline)
+    end
   end
 
   defp await_failover_states(states, subscription) do
