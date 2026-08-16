@@ -1,9 +1,9 @@
 # Upgrading to 2.0
 
 2.0 moves to [pulsar-elixir](https://github.com/efcasado/pulsar-elixir/) 3.x and reworks how
-the producer is configured and how it owns its consumers. Every change below fails loudly at
-boot rather than silently at the first message, so a pipeline that starts is a pipeline that
-was migrated.
+the producer is configured and how it owns its consumers. The configuration changes are
+rejected at boot, so a pipeline that starts is configured correctly. The metadata change is
+not: reading a key that moved raises on the first message instead.
 
 Bump the dependency:
 
@@ -236,11 +236,16 @@ the messages that actually failed:
 consumer_opts: [subscription_type: :shared, batch_index_ack_enabled: true]
 ```
 
-It requires `acknowledgmentAtBatchIndexLevelEnabled=true` on the broker — Pulsar's shipped
-`broker.conf` enables it, `standalone.conf` does not — and costs one acknowledgement command
-per message rather than one per entry. Nothing in the protocol reports the broker setting, so
-enabling it against a broker that ignores it will acknowledge whole entries and lose the
-messages batched alongside an acked one. Verify the broker first.
+It requires `acknowledgmentAtBatchIndexLevelEnabled=true` on the broker, which is the default
+on Pulsar 4.2 — `broker.conf` sets it explicitly and a standalone broker inherits it, so a
+cluster that has not overridden it already honours the setting. Check yours with
+`bin/pulsar-admin brokers get-all-dynamic-config`, since nothing in the protocol reports it:
+against a broker with it disabled, an ack acknowledges the whole entry and loses the messages
+batched alongside it. It also costs one acknowledgement command per message rather than one
+per entry.
+
+Nacked messages come back only when `:redelivery_interval` is also set, so the two options go
+together if you want a failed message retried rather than merely narrowed.
 
 ## Complete example
 
