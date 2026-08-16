@@ -2,37 +2,40 @@ defmodule OffBroadway.Pulsar.Consumer do
   @moduledoc false
   use Pulsar.Consumer.Callback
 
+  require Logger
+
   @impl true
-  def init([broadway_producer, base_topic, consumer_registry, subscription, active_state_callback]) do
-    # Notify producer that consumer is ready and needs initial flow.
-    # topic is included so the producer can use it as a stable map key,
-    # avoiding stale PID accumulation when this consumer restarts.
-    # This is sent on first startup AND on every consumer restart.
-    #
-    # For partitioned topics, resolve_topic/3 derives the partition topic
-    # so each partition gets a unique key; non-partitioned consumers get
-    # base_topic unchanged.
-    topic = resolve_topic(self(), base_topic, consumer_registry)
-    send(broadway_producer, {:consumer_ready, self(), topic})
+  def init([broadway_producer, active_state_callback], context) do
+    # The worker PID identifies its permit window; context supplies message metadata.
+    send(broadway_producer, {:consumer_ready, self(), context})
 
     {:ok,
      %{
        broadway_producer: broadway_producer,
-       topic: topic,
-       subscription: subscription,
+       context: context,
        active_state_callback: active_state_callback
      }}
   end
 
   @impl true
   def handle_message(%Pulsar.Message{} = message, state) do
-    # self() is the consumer PID used for ACK/NACK routing.
-    # state.topic is the stable key used for flow-permit accounting.
-    send(state.broadway_producer, {:pulsar_message, message, self(), state.topic})
+    if Pulsar.Message.complete?(message) do
+      send(state.broadway_producer, {:pulsar_message, message, self(), state.context})
+      {:noreply, state}
+    else
+      # :ok hands the ack to the worker; left unacked it would hold the subscription's cursor.
+      Logger.warning("Discarding incomplete chunked message")
 
-    # Return {:noreply, state} to use manual ACK mode
-    # Broadway will handle ACK/NACK through the acknowledger
-    {:noreply, state}
+      {:ok, state}
+    end
+  end
+
+  # Report consumption to the producer; refills remain coupled to Broadway demand.
+  def report_permits(%{consumed: 0}, _broadway_producer), do: :ok
+
+  def report_permits(%{consumed: consumed}, broadway_producer) do
+    send(broadway_producer, {:permits_consumed, self(), consumed})
+    :ok
   end
 
   @impl true
@@ -56,32 +59,11 @@ defmodule OffBroadway.Pulsar.Consumer do
 
     metadata = %{
       active_state: active_state,
-      topic: state.topic,
-      subscription: state.subscription,
+      topic: state.context.topic,
+      subscription: state.context.subscription_name,
       consumer_pid: self()
     }
 
     apply(module, function, [metadata | extra_args])
-  end
-
-  # Finds the ConsumerGroup PID among this consumer's process links, looks up
-  # its registered name in the consumer registry, and returns the partition topic
-  # if the name carries a "-partition-N" suffix; otherwise returns base_topic.
-  defp resolve_topic(consumer_pid, base_topic, consumer_registry) do
-    {:links, links} = Process.info(consumer_pid, :links)
-
-    Enum.find_value(links, base_topic, fn linked_pid ->
-      case Registry.keys(consumer_registry, linked_pid) do
-        [name] when is_binary(name) -> partition_topic(base_topic, name)
-        _ -> nil
-      end
-    end)
-  end
-
-  defp partition_topic(base_topic, group_name) do
-    case Regex.run(~r/-partition-(\d+)$/, group_name) do
-      [_, idx_str] -> Pulsar.PartitionTopic.name(base_topic, String.to_integer(idx_str))
-      nil -> nil
-    end
   end
 end

@@ -11,7 +11,6 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
     producer_concurrency = Keyword.get(opts, :producer_concurrency, 1)
     processor_concurrency = Keyword.get(opts, :processor_concurrency, 1)
 
-    # Support both :topic (single, backwards-compatible) and :topics (list).
     topic_config =
       if Keyword.has_key?(opts, :topics) do
         [topics: Keyword.fetch!(opts, :topics)]
@@ -20,20 +19,8 @@ defmodule OffBroadwayPulsar.Test.Support.DummyPipeline do
       end
 
     producer_config =
-      case {Keyword.get(opts, :host), Keyword.get(opts, :client)} do
-        {nil, nil} ->
-          [host: "pulsar://localhost:6650", subscription: subscription, consumer_opts: consumer_opts] ++
-            topic_config
-
-        {host, _} when host != nil ->
-          [host: host, subscription: subscription, consumer_opts: consumer_opts] ++ topic_config
-
-        {nil, client} ->
-          [client: client, subscription: subscription, consumer_opts: consumer_opts] ++ topic_config
-      end
-
-    producer_config =
-      producer_config
+      ([subscription: subscription, consumer_opts: consumer_opts] ++ topic_config)
+      |> maybe_put(opts, :client)
       |> maybe_put(opts, :flow_initial)
       |> maybe_put(opts, :flow_threshold)
       |> maybe_put(opts, :flow_refill)

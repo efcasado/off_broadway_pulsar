@@ -10,8 +10,49 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
     end
 
     test "is defined for any reason and state" do
-      assert Consumer.terminate(:shutdown, %{broadway_producer: self(), topic: "t"}) == :ok
+      assert Consumer.terminate(:shutdown, %{broadway_producer: self(), context: %{topic: "t"}}) == :ok
       assert Consumer.terminate({:shutdown, :reason}, nil) == :ok
+    end
+  end
+
+  describe "handle_message/2" do
+    test "forwards a complete message and leaves it unacknowledged" do
+      state = active_state_callback_state()
+      message = %Pulsar.Message{payload: "ok"}
+
+      assert Consumer.handle_message(message, state) == {:noreply, state}
+
+      assert_receive {:pulsar_message, ^message, consumer_pid, %{topic: "my-topic"}}
+      assert consumer_pid == self()
+    end
+
+    test "drops an incomplete chunked message" do
+      state = active_state_callback_state()
+
+      message = %Pulsar.Message{
+        payload: "part",
+        chunk_metadata: %{chunked: true, complete: false, message_ids: [:id_1, :id_2]}
+      }
+
+      # :ok, so the worker acks it rather than the producer.
+      assert Consumer.handle_message(message, state) == {:ok, state}
+
+      refute_receive {:pulsar_message, _, _, _}
+    end
+  end
+
+  describe "report_permits/2" do
+    test "reports what a delivery cost, keyed by the worker" do
+      assert Consumer.report_permits(%{consumed: 3, outstanding: 7}, self()) == :ok
+
+      assert_receive {:permits_consumed, consumer_pid, 3}
+      assert consumer_pid == self()
+    end
+
+    test "stays quiet when a delivery cost nothing" do
+      assert Consumer.report_permits(%{consumed: 0, outstanding: 10}, self()) == :ok
+
+      refute_receive {:permits_consumed, _, _}
     end
   end
 
@@ -92,8 +133,14 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
   defp active_state_callback_state do
     %{
       broadway_producer: self(),
-      topic: "my-topic",
-      subscription: "my-subscription",
+      context: %{
+        topic: "my-topic",
+        base_topic: "my-topic",
+        partition: nil,
+        subscription_name: "my-subscription",
+        subscription_type: :failover,
+        consumer_name: "my-topic-my-subscription-0"
+      },
       active_state_callback: {Utils, :notify_active_state, [self(), :configured_argument]}
     }
   end
