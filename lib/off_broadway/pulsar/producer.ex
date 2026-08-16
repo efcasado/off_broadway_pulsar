@@ -54,10 +54,6 @@ defmodule OffBroadway.Pulsar.Producer do
   # Terminal subscription errors can stop a group without stopping its root.
   @health_check_interval_ms 5_000
 
-  # A stage can restart before the client's replacement Registry is ready.
-  @registry_wait_ms 2_000
-  @registry_poll_ms 100
-
   @doc """
   Starts an `OffBroadway.Pulsar` producer process linked to the current
   process.
@@ -120,19 +116,17 @@ defmodule OffBroadway.Pulsar.Producer do
   ## Consumer ownership
 
   Each producer stage starts one linked consumer root per topic. Pulsar supervises the
-  partition groups and workers below each root; Broadway supervises the stage. If the stage
-  or a root exits, Broadway restarts the stage and recreates all of its roots. Retryable
-  worker failures remain local to the Pulsar topology.
+  partition groups and workers below each root; Broadway supervises the stage. A root exit
+  makes Broadway restart the stage and recreate all of its roots, while stopping the stage
+  stops its linked roots. Retryable worker failures remain local to the Pulsar topology.
 
-  Consumer roots use the client's brokers and Registry, but are not children of its consumer
-  `DynamicSupervisor`. Consequently, `Pulsar.Client.consumers/1` does not list them. They can
-  still be resolved by name, although stopping one with `Pulsar.Consumer.stop/2` causes its
-  owning stage to recreate it. Stop the Broadway pipeline to stop its consumers permanently.
+  Consumer roots use the client's broker infrastructure but are not children of its consumer
+  `DynamicSupervisor`. Consequently, `Pulsar.Client.consumers/1` does not list them. The stage
+  owns them by pid, so replacing the client's consumer Registry does not affect them, although
+  their former names no longer resolve. Stop the Broadway pipeline to stop them permanently.
 
   A terminal subscription error can leave a root alive with a stopped group. The stage
   detects that state and restarts instead of remaining healthy with nothing to consume.
-  Replacing the client's consumer Registry likewise restarts the stage so its roots register
-  with the replacement.
 
   ## Message Metadata
 
@@ -267,9 +261,6 @@ defmodule OffBroadway.Pulsar.Producer do
             "flow_threshold (#{flow_threshold}) must be less than flow_initial (#{flow_initial})"
     end
 
-    registry = await_consumer_registry!(client)
-    registry_monitor = Process.monitor(registry)
-
     # Each worker grants its own initial window on subscribe, so restarts and
     # late-discovered partitions come back with permits rather than waiting to be given
     # any. Refills are this producer's, driven by what Broadway takes.
@@ -308,8 +299,6 @@ defmodule OffBroadway.Pulsar.Producer do
       consumers: %{},
       # root pid => {topic, monitor_ref}
       consumer_roots: consumer_roots,
-      client: client,
-      registry_monitor: {registry, registry_monitor},
       demand: 0,
       # An ordered mix of {:message, %Pulsar.Message{}, consumer_pid, context} and
       # {:permits, consumer_pid, consumed} markers. See take_dispatchable/3.
@@ -350,12 +339,6 @@ defmodule OffBroadway.Pulsar.Producer do
 
   def handle_info({:permits_consumed, consumer_pid, consumed}, state) do
     dispatch_messages(%{state | buffer: state.buffer ++ [{:permits, consumer_pid, consumed}]})
-  end
-
-  def handle_info({:DOWN, monitor_ref, :process, registry, reason}, %{registry_monitor: {registry, monitor_ref}} = state) do
-    Logger.error("Consumer Registry for client #{inspect(state.client)} exited: #{inspect(reason)}; stopping")
-
-    {:stop, {:shutdown, {:consumer_registry_down, state.client}}, state}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
@@ -536,30 +519,6 @@ defmodule OffBroadway.Pulsar.Producer do
             MyApp.PulsarPipeline
           ]
       """
-    end
-  end
-
-  defp await_consumer_registry!(client) do
-    registry = Pulsar.Client.registry(:consumers, client)
-
-    case await_registry(registry, @registry_wait_ms) do
-      nil ->
-        raise "Pulsar client #{inspect(client)} is running but its consumer Registry " <>
-                "#{inspect(registry)} is not; the client is still starting up or shutting down"
-
-      pid ->
-        pid
-    end
-  end
-
-  defp await_registry(registry, remaining_ms) do
-    case Process.whereis(registry) do
-      nil when remaining_ms > 0 ->
-        Process.sleep(@registry_poll_ms)
-        await_registry(registry, remaining_ms - @registry_poll_ms)
-
-      found_or_nil ->
-        found_or_nil
     end
   end
 

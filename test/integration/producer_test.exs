@@ -524,7 +524,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     end
 
     @tag :capture_log
-    test "a pipeline rebuilds its consumers when the client's consumer registry is replaced" do
+    test "consumer roots survive replacement of the client's consumer Registry" do
       subscription = "registry-replacement-sub"
 
       {:ok, producer} =
@@ -541,20 +541,16 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
           name: :registry_replacement_pipeline
         )
 
-      {:ok, _msg_id} = Pulsar.Producer.send(producer, "before")
-      assert_receive {:message_handled, %Broadway.Message{data: "before"}, _processor}, 10_000
-
       assert [root] = consumer_roots(subscription)
+      assert :ok = Pulsar.Consumer.await_ready(root)
 
-      # Replacing the Registry restarts the client's consumer branch.
       registry = Pulsar.Client.registry(:consumers, @client)
-      :ok = Supervisor.stop(Process.whereis(registry), :shutdown)
-      assert wait_until(fn -> Process.whereis(registry) end, 10_000)
-
-      replacement = wait_until(fn -> Enum.find(consumer_roots(subscription), &(&1 != root)) end, 20_000)
-
-      assert is_pid(replacement)
-      refute Process.alive?(root)
+      old_registry = Process.whereis(registry)
+      :ok = Supervisor.stop(old_registry, :shutdown)
+      replacement_registry = wait_until(fn -> Process.whereis(registry) end, 10_000)
+      assert is_pid(replacement_registry)
+      assert replacement_registry != old_registry
+      assert Process.alive?(root)
 
       {:ok, _msg_id} = Pulsar.Producer.send(producer, "after")
       assert_receive {:message_handled, %Broadway.Message{data: "after"}, _processor}, 10_000

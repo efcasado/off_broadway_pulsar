@@ -96,8 +96,8 @@ producer: [
 
 Broadway and pulsar-elixir have different lifecycle boundaries. The `Pulsar.Client` owns
 shared connection infrastructure; each Broadway producer stage owns the consumers that feed
-it. A consumer root therefore uses the client's Registry and brokers without being a child of
-the client's consumer `DynamicSupervisor`.
+it. A consumer root therefore uses the client's infrastructure without being a child of the
+client's consumer `DynamicSupervisor`.
 
 ```mermaid
 flowchart TD
@@ -129,7 +129,7 @@ flowchart TD
 | A consumer root exits | Its link or monitor stops the stage; Broadway recreates it |
 | A retryable worker failure occurs | Pulsar's topology supervision restarts the worker |
 | A terminal subscription error stops a group | The stage's health check detects it and restarts |
-| The consumer Registry is replaced | Its monitor stops the stage so new roots register with the replacement |
+| The consumer Registry is replaced | Existing roots keep running by pid, but their former names no longer resolve |
 | A broker connection fails | The affected workers restart and reconnect through the client |
 
 Because the roots belong to their producer stages, `Pulsar.Client.consumers/1` does not list

@@ -34,9 +34,6 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     end
 
     test "validates flow options before starting any consumer" do
-      # A registered name is all ensure_client_running!/1 checks. Were the flow options
-      # validated later, this would fail on the client's consumer registry being absent
-      # instead, which says nothing about the option that is actually wrong.
       start_supervised!(%{
         id: :fake_client,
         start: {Agent, :start_link, [fn -> :ok end, [name: :fake_client]]}
@@ -199,14 +196,6 @@ defmodule OffBroadway.Pulsar.ProducerTest do
   end
 
   describe "consumer ownership" do
-    test "stops when the consumer Registry exits" do
-      monitor_ref = make_ref()
-      state = %{state() | registry_monitor: {self(), monitor_ref}}
-
-      assert {:stop, {:shutdown, {:consumer_registry_down, :default}}, _state} =
-               Producer.handle_info({:DOWN, monitor_ref, :process, self(), :shutdown}, state)
-    end
-
     test "stops when a consumer root exits normally" do
       monitor_ref = make_ref()
       state = %{state() | consumer_roots: %{self() => {"topic", monitor_ref}}}
@@ -258,8 +247,6 @@ defmodule OffBroadway.Pulsar.ProducerTest do
     %{
       consumers: %{self() => {"topic", 10}},
       consumer_roots: %{},
-      client: :default,
-      registry_monitor: nil,
       demand: 10,
       buffer: [],
       flow_initial: 10,
