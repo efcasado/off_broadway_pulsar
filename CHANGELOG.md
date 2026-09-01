@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.1](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.0...v2.0.1) (2026-09-01)
+
+
+### Dependencies
+
+* bump pulsar from 3.0.1 to 3.1.0 ([#92](https://github.com/efcasado/off_broadway_pulsar/issues/92)) ([165bdf0](https://github.com/efcasado/off_broadway_pulsar/commit/165bdf0e1844813f10fc01f75a419403d654258b))
+* **ci:** bump jdx/mise-action from 4.2.5 to 4.3.0 ([#90](https://github.com/efcasado/off_broadway_pulsar/issues/90)) ([745e54f](https://github.com/efcasado/off_broadway_pulsar/commit/745e54ffc67ac70603a431c5255dbd8e72fcbe06))
+
 ## [2.0.0](https://github.com/efcasado/off_broadway_pulsar/compare/v1.5.1...v2.0.0) (2026-08-16)
 
 
