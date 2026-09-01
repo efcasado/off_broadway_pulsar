@@ -2,8 +2,6 @@ defmodule OffBroadway.Pulsar.Consumer do
   @moduledoc false
   use Pulsar.Consumer.Callback
 
-  require Logger
-
   @impl true
   def init([broadway_producer, active_state_callback], context) do
     # The worker PID identifies its permit window; context supplies message metadata.
@@ -19,15 +17,9 @@ defmodule OffBroadway.Pulsar.Consumer do
 
   @impl true
   def handle_message(%Pulsar.Message{} = message, state) do
-    if Pulsar.Message.complete?(message) do
-      send(state.broadway_producer, {:pulsar_message, message, self(), state.context})
-      {:noreply, state}
-    else
-      # :ok hands the ack to the worker; left unacked it would hold the subscription's cursor.
-      Logger.warning("Discarding incomplete chunked message")
+    send(state.broadway_producer, {:pulsar_message, message, self(), state.context})
 
-      {:ok, state}
-    end
+    {:noreply, state}
   end
 
   # Report consumption to the producer; refills remain coupled to Broadway demand.

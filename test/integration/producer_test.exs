@@ -504,7 +504,7 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     end
 
     @tag :capture_log
-    test "a terminal subscription failure replaces its root once the subscription is free" do
+    test "an exclusive subscription held elsewhere takes the pipeline down" do
       subscription = "exclusive-ownership-sub"
       consumer_opts = [subscription_type: :exclusive, initial_position: :earliest]
       producer = start_ready_producer(:exclusive_ownership_producer, @exclusive_topic)
@@ -516,28 +516,27 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
       assert_receive {:message_handled, %Broadway.Message{data: "held"}, _processor}, 10_000
       assert [holder_root] = consumer_roots(subscription)
 
-      # :ConsumerBusy stops the group before its worker reports ready to the stage.
-      {:ok, waiting} =
-        start_pipeline(:exclusive_waiting_pipeline, @exclusive_topic, subscription, consumer_opts: consumer_opts)
+      # :ConsumerBusy escalates rather than parking the group, so a second client keeps the
+      # climb off the one this module shares.
+      waiting_client = start_client_without_restart_budget(:exclusive_waiting_client)
 
-      blocked_root = wait_for_other_root(subscription, holder_root, 5_000)
-      assert is_pid(blocked_root)
-      blocked_ref = Process.monitor(blocked_root)
-      assert wait_until(fn -> stopped_group?(blocked_root) end, 4_000)
-      holder_ref = Process.monitor(holder_root)
+      Process.flag(:trap_exit, true)
+
+      {:ok, waiting} =
+        start_pipeline(:exclusive_waiting_pipeline, @exclusive_topic, subscription,
+          client: waiting_client,
+          consumer_opts: consumer_opts
+        )
+
+      assert_receive {:EXIT, ^waiting, :shutdown}, 30_000
+      refute Process.alive?(waiting)
+
+      assert consumer_roots(subscription) == [holder_root]
+
+      {:ok, _msg_id} = Pulsar.Producer.send(producer, "still held")
+      assert_receive {:message_handled, %Broadway.Message{data: "still held"}, _processor}, 10_000
 
       assert :ok = Broadway.stop(holder)
-      assert_receive {:DOWN, ^holder_ref, :process, ^holder_root, _}, 5_000
-      assert_receive {:DOWN, ^blocked_ref, :process, ^blocked_root, _}, 10_000
-
-      {:ok, _msg_id} = Pulsar.Producer.send(producer, "free")
-
-      assert_receive {:message_handled, %Broadway.Message{data: "free"}, _processor}, 30_000
-      replacement_root = wait_for_replacement_root(subscription, blocked_root, 5_000)
-      assert is_pid(replacement_root)
-      assert Process.alive?(waiting)
-
-      assert :ok = Broadway.stop(waiting)
     end
 
     @tag :capture_log
@@ -664,6 +663,20 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
     DummyPipeline.start_link(Keyword.merge(defaults, opts))
   end
 
+  # No budget at either level, so a resource that cannot run escalates on its first failure
+  # instead of retrying for the length of the default windows.
+  defp start_client_without_restart_budget(name) do
+    start_supervised!(
+      {Pulsar.Client,
+       name: name,
+       host: "pulsar://localhost:6650",
+       worker_restart_intensity: [max_restarts: 0, max_seconds: 1],
+       resource_restart_intensity: [max_restarts: 0, max_seconds: 1]}
+    )
+
+    name
+  end
+
   defp start_ready_producer(name, topic) do
     {:ok, producer} = Pulsar.Producer.start_link(topic: topic, client: @client, name: name)
     :ok = Pulsar.Producer.await_ready(producer)
@@ -706,18 +719,6 @@ defmodule OffBroadwayPulsar.Integration.ProducerTest do
       end,
       timeout
     )
-  end
-
-  defp wait_for_other_root(subscription, root, timeout) do
-    wait_until(fn -> Enum.find(consumer_roots(subscription), &(&1 != root)) end, timeout)
-  end
-
-  defp stopped_group?(root) do
-    root
-    |> Supervisor.which_children()
-    |> Enum.any?(fn {_id, pid, _type, _modules} -> pid == :undefined end)
-  catch
-    :exit, _reason -> false
   end
 
   defp do_wait_until(fun, deadline) do

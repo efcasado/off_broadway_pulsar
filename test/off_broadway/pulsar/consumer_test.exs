@@ -25,20 +25,6 @@ defmodule OffBroadway.Pulsar.ConsumerTest do
       assert_receive {:pulsar_message, ^message, consumer_pid, %{topic: "my-topic"}}
       assert consumer_pid == self()
     end
-
-    test "drops an incomplete chunked message" do
-      state = active_state_callback_state()
-
-      message = %Pulsar.Message{
-        payload: "part",
-        chunk_metadata: %{chunked: true, complete: false, message_ids: [:id_1, :id_2]}
-      }
-
-      # :ok, so the worker acks it rather than the producer.
-      assert Consumer.handle_message(message, state) == {:ok, state}
-
-      refute_receive {:pulsar_message, _, _, _}
-    end
   end
 
   describe "report_permits/2" do
