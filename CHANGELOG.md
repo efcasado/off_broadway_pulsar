@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.2](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.1...v2.0.2) (2026-09-07)
+
+
+### Dependencies
+
+* bump ex_doc from 0.40.3 to 0.40.4 ([#94](https://github.com/efcasado/off_broadway_pulsar/issues/94)) ([5a2382c](https://github.com/efcasado/off_broadway_pulsar/commit/5a2382c48f7a913fb33fda7b34996b1ac2d74608))
+* bump pulsar from 3.1.0 to 3.1.1 ([#93](https://github.com/efcasado/off_broadway_pulsar/issues/93)) ([3d82622](https://github.com/efcasado/off_broadway_pulsar/commit/3d826222e1906b878b87e95a252b70930b994285))
+
 ## [2.0.1](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.0...v2.0.1) (2026-09-01)
 
 
