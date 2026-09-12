@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.2...v2.0.3) (2026-09-12)
+
+
+### Dependencies
+
+* bump dialyxir from 1.4.7 to 1.4.8 ([#96](https://github.com/efcasado/off_broadway_pulsar/issues/96)) ([c18cd68](https://github.com/efcasado/off_broadway_pulsar/commit/c18cd6814fb8206617c5a36f823140cf6feca7cc))
+
 ## [2.0.2](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.1...v2.0.2) (2026-09-07)
 
 
