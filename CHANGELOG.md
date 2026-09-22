@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.3](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.2...v2.0.3) (2026-09-22)
+
+
+### Dependencies
+
+* bump dialyxir from 1.4.7 to 1.4.8 ([#96](https://github.com/efcasado/off_broadway_pulsar/issues/96)) ([c18cd68](https://github.com/efcasado/off_broadway_pulsar/commit/c18cd6814fb8206617c5a36f823140cf6feca7cc))
+* bump pulsar from 3.1.1 to 3.2.0 ([#98](https://github.com/efcasado/off_broadway_pulsar/issues/98)) ([d07f9d6](https://github.com/efcasado/off_broadway_pulsar/commit/d07f9d610ef62aa16387be0bc66cf379b770d00e))
+
 ## [2.0.2](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.1...v2.0.2) (2026-09-07)
 
 
