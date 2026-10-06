@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.4](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.3...v2.0.4) (2026-10-06)
+
+
+### Dependencies
+
+* **ci:** bump dorny/test-reporter from 3.0.0 to 3.2.0 ([#101](https://github.com/efcasado/off_broadway_pulsar/issues/101)) ([13d3c9f](https://github.com/efcasado/off_broadway_pulsar/commit/13d3c9f94b10dae5116e684845a336e24886c10f))
+* **ci:** bump jdx/mise-action from 4.3.0 to 5.0.1 ([#100](https://github.com/efcasado/off_broadway_pulsar/issues/100)) ([ed1fa40](https://github.com/efcasado/off_broadway_pulsar/commit/ed1fa408609c2dbb4e15fd674af9f709574e9c59))
+
 ## [2.0.3](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.2...v2.0.3) (2026-09-22)
 
 
