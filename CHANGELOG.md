@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.4](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.3...v2.0.4) (2026-10-28)
+
+
+### Dependencies
+
+* **ci:** bump dorny/test-reporter from 3.0.0 to 3.2.0 ([#101](https://github.com/efcasado/off_broadway_pulsar/issues/101)) ([13d3c9f](https://github.com/efcasado/off_broadway_pulsar/commit/13d3c9f94b10dae5116e684845a336e24886c10f))
+* **ci:** bump jdx/mise-action from 4.3.0 to 5.0.1 ([#100](https://github.com/efcasado/off_broadway_pulsar/issues/100)) ([ed1fa40](https://github.com/efcasado/off_broadway_pulsar/commit/ed1fa408609c2dbb4e15fd674af9f709574e9c59))
+* **ci:** bump jdx/mise-action from 5.0.1 to 5.2.1 ([#107](https://github.com/efcasado/off_broadway_pulsar/issues/107)) ([954b41b](https://github.com/efcasado/off_broadway_pulsar/commit/954b41b73210806650695425bc3c42719642b949))
+* **ci:** bump jdx/mise-action from 5.2.1 to 5.2.3 ([#109](https://github.com/efcasado/off_broadway_pulsar/issues/109)) ([0b0ba1b](https://github.com/efcasado/off_broadway_pulsar/commit/0b0ba1beeaa7474678a61d0992a5dbcebc7b3e4a))
+* **docker:** bump apachepulsar/pulsar from 4.2.4 to 5.0.0 ([#104](https://github.com/efcasado/off_broadway_pulsar/issues/104)) ([39d6912](https://github.com/efcasado/off_broadway_pulsar/commit/39d6912bcd5e0279ff2e458e8d04b348db86020f))
+
 ## [2.0.3](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.2...v2.0.3) (2026-09-22)
 
 
