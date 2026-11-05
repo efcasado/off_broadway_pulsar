@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.0.4](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.3...v2.0.4) (2026-11-05)
+
+
+### Dependencies
+
+* **ci:** bump dorny/test-reporter from 3.0.0 to 3.2.0 ([#101](https://github.com/efcasado/off_broadway_pulsar/issues/101)) ([13d3c9f](https://github.com/efcasado/off_broadway_pulsar/commit/13d3c9f94b10dae5116e684845a336e24886c10f))
+* **ci:** bump jdx/mise-action from 4.3.0 to 5.0.1 ([#100](https://github.com/efcasado/off_broadway_pulsar/issues/100)) ([ed1fa40](https://github.com/efcasado/off_broadway_pulsar/commit/ed1fa408609c2dbb4e15fd674af9f709574e9c59))
+* **ci:** bump jdx/mise-action from 5.0.1 to 5.2.1 ([#107](https://github.com/efcasado/off_broadway_pulsar/issues/107)) ([954b41b](https://github.com/efcasado/off_broadway_pulsar/commit/954b41b73210806650695425bc3c42719642b949))
+* **ci:** bump jdx/mise-action from 5.2.1 to 5.2.3 ([#109](https://github.com/efcasado/off_broadway_pulsar/issues/109)) ([0b0ba1b](https://github.com/efcasado/off_broadway_pulsar/commit/0b0ba1beeaa7474678a61d0992a5dbcebc7b3e4a))
+* **ci:** bump jdx/mise-action from 5.2.3 to 5.2.4 ([#111](https://github.com/efcasado/off_broadway_pulsar/issues/111)) ([2e347eb](https://github.com/efcasado/off_broadway_pulsar/commit/2e347eb359e6b002dc39c649db279ae49fa6c4a2))
+* **ci:** bump jdx/mise-action from 5.2.4 to 5.2.5 ([#112](https://github.com/efcasado/off_broadway_pulsar/issues/112)) ([beeace4](https://github.com/efcasado/off_broadway_pulsar/commit/beeace425a52bbf77489b8ac6af148f4f54553e9))
+* **ci:** bump jdx/mise-action from 5.2.5 to 5.2.6 ([#113](https://github.com/efcasado/off_broadway_pulsar/issues/113)) ([bda40ce](https://github.com/efcasado/off_broadway_pulsar/commit/bda40cee76c34e9f4c556d5128d2d2e9377eb477))
+* **docker:** bump apachepulsar/pulsar from 4.2.4 to 5.0.0 ([#104](https://github.com/efcasado/off_broadway_pulsar/issues/104)) ([39d6912](https://github.com/efcasado/off_broadway_pulsar/commit/39d6912bcd5e0279ff2e458e8d04b348db86020f))
+* **docker:** bump apachepulsar/pulsar from 5.0.0 to 5.0.1 ([#110](https://github.com/efcasado/off_broadway_pulsar/issues/110)) ([308f1e7](https://github.com/efcasado/off_broadway_pulsar/commit/308f1e7a31216a4cdd8f4e9a1e84ea2adf7bfd33))
+
 ## [2.0.3](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.2...v2.0.3) (2026-09-22)
 
 
