@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.0.5](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.4...v2.0.5) (2026-11-20)
+
+
+### Dependencies
+
+* bump dialyxir from 1.4.8 to 1.4.9 ([#118](https://github.com/efcasado/off_broadway_pulsar/issues/118)) ([a1a0b1d](https://github.com/efcasado/off_broadway_pulsar/commit/a1a0b1d5f46fd90c9ae828889c95fe0542cd55a6))
+* **ci:** bump jdx/mise-action from 5.2.7 to 5.2.8 ([#119](https://github.com/efcasado/off_broadway_pulsar/issues/119)) ([f2d3438](https://github.com/efcasado/off_broadway_pulsar/commit/f2d3438ab239e85a937bdf76eab825ce807c2b31))
+* **ci:** bump jdx/mise-action from 5.2.8 to 5.2.9 ([#121](https://github.com/efcasado/off_broadway_pulsar/issues/121)) ([38672e5](https://github.com/efcasado/off_broadway_pulsar/commit/38672e5f2435177204793d2f75a93c4072b91a38))
+
 ## [2.0.4](https://github.com/efcasado/off_broadway_pulsar/compare/v2.0.3...v2.0.4) (2026-11-10)
 
 
